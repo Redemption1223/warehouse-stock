@@ -378,8 +378,8 @@ def show_login():
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Professional footer
-        st.markdown("""
+        # Professional footer with mobile optimization
+        footer_html = """
         <div style="text-align: center; margin-top: 2rem; color: #666; font-size: 0.9rem;">
             <p>🔒 Secure • 📱 Mobile Optimized • ⚡ Real-Time</p>
             <p style="font-size: 0.8rem;">Professional inventory management for fire safety equipment</p>
@@ -389,12 +389,13 @@ def show_login():
                 <small>Perfect for warehouse staff on tablets and phones!</small>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
+        st.markdown(footer_html, unsafe_allow_html=True)
 
 # Main application
 def main():
     st.set_page_config(
-        page_title="tock Control", 
+        page_title="🔥 Fire Extinguisher Stock Control", 
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={
@@ -402,7 +403,7 @@ def main():
             'Report a bug': None,
             'About': None
         }
-    )
+        )
     
     # Hide Streamlit style elements and add mobile navigation
     hide_streamlit_style = """
@@ -573,7 +574,6 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
-        user_role = st.session_state.user_role
         role_display = {
             'warehouse_manager': '👨‍💼 Warehouse Manager',
             'boss': '👔 Boss/Owner', 
@@ -602,84 +602,87 @@ def main():
     # Mobile Navigation Menu
     def show_mobile_navigation(user_role):
         """Show mobile-friendly navigation"""
-        if user_role == "viewer":
-            mobile_options = {
-                "📊 Final Products Dashboard": "final_dashboard",
-                "📦 Final Products View": "final_view"
-            }
-        elif user_role == "boss":
-            mobile_options = {
-                "📊 Management Dashboard": "mgmt_dashboard",
-                "📦 Complete Stock View": "complete_view", 
-                "📈 Stock Movements": "movements",
-                "📋 Management Reports": "mgmt_reports"
-            }
-        else:  # warehouse_manager
-            mobile_options = {
-                "📊 Dashboard": "dashboard",
-                "📦 Stock Management": "stock_mgmt", 
-                "🏭 Production Center": "production",
-                "📈 Stock Movements": "movements",
-                "⚙️ Item Management": "items",
-                "🧾 Bill of Materials": "bom",
-                "🏪 Warehouse Areas": "areas",
-                "📋 Reports": "reports",
-                "💾 Excel Import/Export": "excel",
-                "👥 User Management": "users"
-            }
-        
-        # Mobile navigation dropdown
-        st.markdown("""
-        <div class="mobile-nav">
-            <p style="color: white; margin: 0 0 0.5rem 0; font-weight: bold; text-align: center;">📱 Choose Your Section</p>
-            <p style="color: white; margin: 0 0 0.5rem 0; font-size: 0.8rem; text-align: center; opacity: 0.9;">Select from dropdown below to navigate</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Store current selection in session state
-        if 'mobile_menu_selection' not in st.session_state:
-            st.session_state.mobile_menu_selection = list(mobile_options.keys())[0]
-        
-        # Mobile menu selector with better UX
-        selected_option = st.selectbox(
-            "🔥 Navigate to:",
-            options=list(mobile_options.keys()),
-            key="mobile_navigation",
-            index=list(mobile_options.keys()).index(st.session_state.mobile_menu_selection),
-            help="Choose a section to view. This menu is always available for easy navigation on mobile devices."
-        )
-        
-        # Update session state
-        st.session_state.mobile_menu_selection = selected_option
-        
-        # Mobile navigation tip
-        st.markdown("""
-        <div style="background: #e8f4fd; padding: 0.5rem; border-radius: 4px; margin-bottom: 1rem; display: block;">
-            <small style="color: #1f4e79;">
-                💡 <strong>Mobile Tip:</strong> This navigation menu is always at the top of the page for easy section switching.
-            </small>
-        </div>
-        
-        <script>
-        // Show mobile nav only on mobile devices
-        if (window.innerWidth <= 768) {
-            document.querySelector('.mobile-nav').style.display = 'block';
-        }
-        </script>
-        """, unsafe_allow_html=True)
-        
-        return mobile_options[selected_option]
+        try:
+            if user_role == "viewer":
+                mobile_options = {
+                    "📊 Final Products Dashboard": "final_dashboard",
+                    "📦 Final Products View": "final_view"
+                }
+            elif user_role == "boss":
+                mobile_options = {
+                    "📊 Management Dashboard": "mgmt_dashboard",
+                    "📦 Complete Stock View": "complete_view", 
+                    "📈 Stock Movements": "movements",
+                    "📋 Management Reports": "mgmt_reports"
+                }
+            else:  # warehouse_manager
+                mobile_options = {
+                    "📊 Dashboard": "dashboard",
+                    "📦 Stock Management": "stock_mgmt", 
+                    "🏭 Production Center": "production",
+                    "📈 Stock Movements": "movements",
+                    "⚙️ Item Management": "items",
+                    "🧾 Bill of Materials": "bom",
+                    "🏪 Warehouse Areas": "areas",
+                    "📋 Reports": "reports",
+                    "💾 Excel Import/Export": "excel",
+                    "👥 User Management": "users"
+                }
+            
+            # Mobile navigation dropdown
+            st.markdown("""
+            <div class="mobile-nav">
+                <p style="color: white; margin: 0 0 0.5rem 0; font-weight: bold; text-align: center;">📱 Choose Your Section</p>
+                <p style="color: white; margin: 0 0 0.5rem 0; font-size: 0.8rem; text-align: center; opacity: 0.9;">Select from dropdown below to navigate</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Store current selection in session state
+            if 'mobile_menu_selection' not in st.session_state:
+                st.session_state.mobile_menu_selection = list(mobile_options.keys())[0]
+            
+            # Mobile menu selector with better UX
+            selected_option = st.selectbox(
+                "🔥 Navigate to:",
+                options=list(mobile_options.keys()),
+                key="mobile_navigation",
+                index=list(mobile_options.keys()).index(st.session_state.mobile_menu_selection) if st.session_state.mobile_menu_selection in mobile_options else 0,
+                help="Choose a section to view. This menu is always available for easy navigation on mobile devices."
+            )
+            
+            # Update session state
+            st.session_state.mobile_menu_selection = selected_option
+            
+            # Mobile navigation tip
+            st.markdown("""
+            <div style="background: #e8f4fd; padding: 0.5rem; border-radius: 4px; margin-bottom: 1rem;">
+                <small style="color: #1f4e79;">
+                    💡 <strong>Mobile Tip:</strong> This navigation menu is always at the top of the page for easy section switching.
+                </small>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            return mobile_options[selected_option]
+            
+        except Exception as e:
+            # Fallback to first option if there's any error
+            st.error(f"Navigation error: {str(e)}")
+            return "dashboard" if user_role == "warehouse_manager" else "final_dashboard"
     
     # Get menu selection for mobile
-    mobile_selection = show_mobile_navigation(st.session_state.user_role)
+    user_role = st.session_state.user_role
+    mobile_selection = show_mobile_navigation(user_role)
     
     # Professional footer with mobile optimization
-    st.markdown("""
+    user_name = st.session_state.get('full_name', 'User')
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    footer_html = f"""
     <div style="text-align: center; margin-top: 2rem; padding: 1rem; background-color: #f8f9fa; border-radius: 5px;">
         <p style="margin: 0; color: #666; font-size: 0.9rem;">
             🔥 Professional Fire Extinguisher Inventory System | 
-            👤 {user} | 
-            📅 {date} | 
+            👤 {user_name} | 
+            📅 {current_date} | 
             🔒 Secure Business Solution
         </p>
         <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #888;">
@@ -694,32 +697,31 @@ def main():
     
     <script>
     // Mobile navigation enhancement
-    function isMobile() {
+    function isMobile() {{
         return window.innerWidth <= 768;
-    }
+    }}
     
     // Show/hide mobile elements based on screen size
-    function updateMobileUI() {
+    function updateMobileUI() {{
         const mobileNav = document.querySelector('.mobile-nav');
         const mobileBtn = document.querySelector('.mobile-menu-btn');
         
-        if (isMobile()) {
+        if (isMobile()) {{
             if (mobileNav) mobileNav.style.display = 'block';
             if (mobileBtn) mobileBtn.style.display = 'block';
-        } else {
+        }} else {{
             if (mobileNav) mobileNav.style.display = 'none';
             if (mobileBtn) mobileBtn.style.display = 'none';
-        }
-    }
+        }}
+    }}
     
     // Run on load and resize
     window.addEventListener('load', updateMobileUI);
     window.addEventListener('resize', updateMobileUI);
     </script>
-    """.format(
-        user=st.session_state.full_name,
-        date=datetime.now().strftime("%Y-%m-%d")
-    ), unsafe_allow_html=True)
+    """
+    
+    st.markdown(footer_html, unsafe_allow_html=True)
     
     # Navigation based on user role and device
     if user_role == "viewer":
