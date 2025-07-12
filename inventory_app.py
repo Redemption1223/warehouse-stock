@@ -332,7 +332,7 @@ def show_login():
 
 # Main application
 def main():
-    st.set_page_config(page_title=" Stock Control", layout="wide")
+    st.set_page_config(page_title="Stock Control", layout="wide")
     
     # Initialize databases
     init_database()
@@ -404,7 +404,7 @@ def main():
             show_management_reports()
             
     else:  # warehouse_manager
-        # Full access menu without user management
+        # Full access menu with user management
         menu = st.sidebar.selectbox("Select Module", [
             "📊 Dashboard",
             "📦 Stock Management", 
@@ -414,7 +414,8 @@ def main():
             "🧾 Bill of Materials",
             "🏪 Warehouse Areas",
             "📋 Reports",
-            "💾 Excel Import/Export"
+            "💾 Excel Import/Export",
+            "👥 User Management"
         ])
         
         if menu == "📊 Dashboard":
@@ -435,6 +436,8 @@ def main():
             show_reports()
         elif menu == "💾 Excel Import/Export":
             show_excel_integration()
+        elif menu == "👥 User Management":
+            show_user_management()
 
 def show_final_products_dashboard():
     """Dashboard for viewers - final products only"""
@@ -1334,6 +1337,175 @@ def show_management_reports():
         }).rename(columns={'name': 'item_count', 'current_stock': 'total_stock'})
         
         st.dataframe(area_utilization, use_container_width=True)
+
+def show_user_management():
+    """User management interface - only accessible by warehouse manager"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Only Warehouse Manager can manage users.")
+        return
+    
+    st.header("👥 User Management")
+    
+    # Show current users
+    conn = sqlite3.connect('inventory.db')
+    users_df = pd.read_sql_query("SELECT username, role, full_name, created_date, last_login FROM users ORDER BY role, username", conn)
+    conn.close()
+    
+    st.subheader("👤 Current Users")
+    
+    # Format the display
+    if not users_df.empty:
+        # Add role descriptions
+        role_descriptions = {
+            "warehouse_manager": "👨‍💼 Full Access - Can manage everything",
+            "boss": "👔 Management View - Can see all, limited editing", 
+            "viewer": "👁️ Limited View - Final products only"
+        }
+        
+        users_df['Role Description'] = users_df['role'].map(role_descriptions)
+        
+        display_df = users_df[['username', 'Role Description', 'full_name', 'last_login']]
+        display_df.columns = ['Username', 'Access Level', 'Full Name', 'Last Login']
+        
+        st.dataframe(display_df, use_container_width=True)
+    
+    # Add new user section
+    st.subheader("➕ Add New User")
+    
+    with st.form("add_user_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_username = st.text_input("Username", placeholder="e.g., john_smith")
+            new_password = st.text_input("Password", type="password", placeholder="Strong password")
+            new_full_name = st.text_input("Full Name", placeholder="e.g., John Smith")
+        
+        with col2:
+            new_role = st.selectbox("Access Level", ["viewer", "boss", "warehouse_manager"])
+            
+            # Show role descriptions
+            role_info = {
+                "viewer": "👁️ **Viewer**: Can only see final products inventory. Perfect for sales staff or general employees.",
+                "boss": "👔 **Boss/Manager**: Can view all inventory and reports but cannot change stock levels. Perfect for management oversight.",
+                "warehouse_manager": "👨‍💼 **Warehouse Manager**: Full access to everything including adding/editing items, managing stock, and user management. Perfect for warehouse operations."
+            }
+            
+            st.info(role_info[new_role])
+        
+        submitted = st.form_submit_button("➕ Create User", type="primary")
+        
+        if submitted:
+            if new_username and new_password and new_full_name:
+                # Validate username (no spaces, special characters)
+                if not new_username.replace('_', '').replace('-', '').isalnum():
+                    st.error("❌ Username can only contain letters, numbers, hyphens, and underscores!")
+                elif len(new_password) < 6:
+                    st.error("❌ Password must be at least 6 characters long!")
+                else:
+                    try:
+                        conn = sqlite3.connect('inventory.db')
+                        c = conn.cursor()
+                        
+                        # Check if username already exists
+                        existing = c.execute("SELECT username FROM users WHERE username = ?", (new_username,)).fetchone()
+                        if existing:
+                            st.error("❌ Username already exists! Please choose a different username.")
+                        else:
+                            password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                            c.execute("INSERT INTO users (username, password_hash, role, full_name, created_date) VALUES (?, ?, ?, ?, ?)",
+                                     (new_username, password_hash, new_role, new_full_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                            
+                            conn.commit()
+                            st.success(f"✅ User '{new_username}' created successfully!")
+                            st.info(f"🔑 **Login Details for {new_full_name}:**\n\nUsername: `{new_username}`\nPassword: `{new_password}`\nAccess Level: {role_info[new_role].split(':')[1].strip()}")
+                            st.rerun()
+                        
+                        conn.close()
+                        
+                    except sqlite3.Error as e:
+                        st.error(f"❌ Database error: {str(e)}")
+            else:
+                st.error("❌ Please fill in all fields!")
+    
+    # Delete/Modify users section
+    if not users_df.empty:
+        st.subheader("⚙️ Manage Existing Users")
+        
+        # Don't allow deleting yourself
+        other_users = users_df[users_df['username'] != st.session_state.username]
+        
+        if not other_users.empty:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**🗑️ Delete User**")
+                user_to_delete = st.selectbox("Select user to delete", 
+                                            options=other_users['username'].tolist(),
+                                            format_func=lambda x: f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0]} ({other_users[other_users['username']==x]['role'].iloc[0]})")
+                
+                if st.button("🗑️ Delete User", type="secondary"):
+                    if st.session_state.get('confirm_delete_user') == user_to_delete:
+                        # Delete user
+                        conn = sqlite3.connect('inventory.db')
+                        c = conn.cursor()
+                        c.execute('DELETE FROM users WHERE username = ?', (user_to_delete,))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"🗑️ User '{user_to_delete}' deleted successfully!")
+                        if 'confirm_delete_user' in st.session_state:
+                            del st.session_state['confirm_delete_user']
+                        st.rerun()
+                    else:
+                        st.session_state['confirm_delete_user'] = user_to_delete
+                        st.warning("⚠️ Click DELETE again to confirm deletion")
+            
+            with col2:
+                st.write("**🔒 Reset Password**")
+                user_to_reset = st.selectbox("Select user for password reset", 
+                                           options=other_users['username'].tolist(),
+                                           format_func=lambda x: f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0]}")
+                
+                new_temp_password = st.text_input("New temporary password", type="password", placeholder="New password for user")
+                
+                if st.button("🔒 Reset Password"):
+                    if new_temp_password and len(new_temp_password) >= 6:
+                        conn = sqlite3.connect('inventory.db')
+                        c = conn.cursor()
+                        
+                        password_hash = hashlib.sha256(new_temp_password.encode()).hexdigest()
+                        c.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
+                                 (password_hash, user_to_reset))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"🔒 Password reset for '{user_to_reset}'!")
+                        st.info(f"**New login details:**\nUsername: `{user_to_reset}`\nPassword: `{new_temp_password}`")
+                    else:
+                        st.error("❌ Password must be at least 6 characters long!")
+        else:
+            st.info("You are the only user in the system.")
+    
+    # System security info
+    with st.expander("🛡️ Security Information"):
+        st.markdown("""
+        ### 🔐 Security Features:
+        - ✅ **Passwords are encrypted** - Never stored in plain text
+        - ✅ **Role-based access** - Users only see what they're allowed to
+        - ✅ **Activity logging** - All changes are tracked with user information
+        - ✅ **Session management** - Automatic logout for security
+        
+        ### 👥 User Roles Explained:
+        - **👁️ Viewer**: Perfect for sales staff, drivers, or general employees who need to check final product availability
+        - **👔 Boss/Manager**: Ideal for management who need to see everything but shouldn't accidentally change stock levels
+        - **👨‍💼 Warehouse Manager**: Full operational control - only give this to trusted warehouse staff
+        
+        ### 💡 Best Practices:
+        - Use strong passwords (at least 8 characters with numbers)
+        - Change default passwords immediately after deployment
+        - Regular review of user access levels
+        - Remove users who no longer need access
+        """)
 
 if __name__ == "__main__":
     main()
