@@ -300,17 +300,65 @@ def import_from_excel_with_areas(uploaded_file):
 
 # Login system
 def show_login():
-    st.title(" Inventory System")
-    st.markdown("### Please Login to Continue")
+    # Hide Streamlit elements on login page too
+    hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stDeployButton {visibility: hidden;}
+    .stDecoration {visibility: hidden;}
+    .viewerBadge_container__1QSob {display: none;}
+    
+    /* Center the login form */
+    .main .block-container {
+        padding-top: 5rem;
+        max-width: 600px;
+        margin: 0 auto;
+    }
+    
+    /* Professional login styling */
+    .login-header {
+        text-align: center;
+        margin-bottom: 3rem;
+        padding: 2rem;
+        background: linear-gradient(135deg, #FF4B4B 0%, #FF6B6B 100%);
+        border-radius: 10px;
+        color: white;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .login-form {
+        background: white;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid #e0e0e0;
+    }
+    </style>
+    """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+    
+    # Professional login header
+    st.markdown("""
+    <div class="login-header">
+        <div style="font-size: 4rem; margin-bottom: 1rem;">🔥</div>
+        <h1 style="margin: 0; font-size: 2.5rem;">Fire Extinguisher</h1>
+        <h2 style="margin: 0; font-size: 2rem; opacity: 0.9;">Inventory System</h2>
+        <p style="margin: 1rem 0 0 0; font-size: 1.1rem; opacity: 0.8;">Professional Stock Control & Management</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
+        st.markdown('<div class="login-form">', unsafe_allow_html=True)
+        
         with st.form("login_form"):
-            st.markdown("#### User Login")
-            username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
-            submit = st.form_submit_button("🔓 Login", use_container_width=True)
+            st.markdown("#### 🔐 Secure Access")
+            username = st.text_input("👤 Username", placeholder="Enter your username")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+            submit = st.form_submit_button("🚀 Access System", use_container_width=True, type="primary")
             
             if submit:
                 if username and password:
@@ -321,18 +369,95 @@ def show_login():
                         st.session_state.username = username
                         st.session_state.user_role = role
                         st.session_state.full_name = full_name
-                        st.success(f"Welcome {full_name}!")
+                        st.success(f"✅ Welcome {full_name}!")
                         st.rerun()
                     else:
-                        st.error("❌ Invalid username or password")
+                        st.error("❌ Invalid credentials. Please try again.")
                 else:
                     st.error("❌ Please enter both username and password")
         
-        # Remove default credentials display for security
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Professional footer
+        st.markdown("""
+        <div style="text-align: center; margin-top: 2rem; color: #666; font-size: 0.9rem;">
+            <p>🔒 Secure • 📱 Multi-Device • ⚡ Real-Time</p>
+            <p style="font-size: 0.8rem;">Professional inventory management for fire safety equipment</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 # Main application
 def main():
-    st.set_page_config(page_title="Stock Control", layout="wide")
+    st.set_page_config(
+        page_title="🔥 Fire Extinguisher Stock Control", 
+        layout="wide",
+        initial_sidebar_state="expanded",
+        menu_items={
+            'Get Help': None,
+            'Report a bug': None,
+            'About': None
+        }
+    )
+    
+    # Hide Streamlit style elements
+    hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stDeployButton {visibility: hidden;}
+    .stDecoration {visibility: hidden;}
+    .stActionButton {visibility: hidden;}
+    .stToolbar {visibility: hidden;}
+    .stAppViewContainer > .main .block-container {
+        padding-top: 1rem;
+    }
+    
+    /* Custom professional styling */
+    .main .block-container {
+        max-width: 100%;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+    
+    /* Hide edit and fullscreen buttons on dataframes */
+    .stDataFrame button {
+        visibility: hidden;
+    }
+    
+    /* Professional header styling */
+    .stApp > header {
+        background-color: transparent;
+    }
+    
+    /* Remove Streamlit branding */
+    .viewerBadge_container__1QSob {
+        display: none;
+    }
+    
+    /* Clean sidebar */
+    .css-1d391kg {
+        padding-top: 1rem;
+    }
+    
+    /* Professional look */
+    .stSelectbox label, .stTextInput label, .stNumberInput label {
+        font-weight: 600;
+        color: #262730;
+    }
+    
+    /* Hide dataframe toolbar */
+    .stDataFrame [data-testid="stElementToolbar"] {
+        display: none;
+    }
+    
+    /* Hide chart/plot toolbars */
+    .js-plotly-plot .plotly .modebar {
+        display: none;
+    }
+    </style>
+    """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
     
     # Initialize databases
     init_database()
@@ -355,7 +480,16 @@ def main():
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        st.title("🔥 Fire Extinguisher Stock Control System")
+        st.markdown("""
+        <div style="display: flex; align-items: center; margin-bottom: 1rem;">
+            <div style="font-size: 2.5rem; margin-right: 1rem;">🔥</div>
+            <div>
+                <h1 style="margin: 0; color: #262730;">Fire Extinguisher Stock Control</h1>
+                <p style="margin: 0; color: #666; font-size: 0.9rem;">Professional Inventory Management System</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         user_role = st.session_state.user_role
         role_display = {
             'warehouse_manager': '👨‍💼 Warehouse Manager',
@@ -365,12 +499,33 @@ def main():
         st.markdown(f"**{role_display.get(user_role, user_role)} - {st.session_state.full_name}**")
     
     with col3:
-        if st.button("🚪 Logout"):
+        # Professional logout button
+        if st.button("🚪 Logout", type="secondary", use_container_width=True):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
     
+    # Welcome message for first-time users
+    if st.session_state.get('show_welcome', True):
+        st.info(f"👋 Welcome back, {st.session_state.full_name}! Your inventory system is ready.")
+        st.session_state.show_welcome = False
+    
     st.markdown("---")
+    
+    # Professional footer
+    st.markdown("""
+    <div style="text-align: center; margin-top: 2rem; padding: 1rem; background-color: #f8f9fa; border-radius: 5px;">
+        <p style="margin: 0; color: #666; font-size: 0.9rem;">
+            🔥 Professional Fire Extinguisher Inventory System | 
+            👤 {user} | 
+            📅 {date} | 
+            🔒 Secure Business Solution
+        </p>
+    </div>
+    """.format(
+        user=st.session_state.full_name,
+        date=datetime.now().strftime("%Y-%m-%d")
+    ), unsafe_allow_html=True)
     
     # Navigation based on user role
     if user_role == "viewer":
