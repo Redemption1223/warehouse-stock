@@ -300,7 +300,7 @@ def import_from_excel_with_areas(uploaded_file):
 
 # Login system
 def show_login():
-    st.title("🔐 Fire Extinguisher Inventory System")
+    st.title(" Inventory System")
     st.markdown("### Please Login to Continue")
     
     col1, col2, col3 = st.columns([1, 2, 1])
