@@ -300,7 +300,7 @@ def import_from_excel_with_areas(uploaded_file):
 
 # Login system
 def show_login():
-    st.title("🔐 Inventory System")
+    st.title("🔐 Fire Extinguisher Inventory System")
     st.markdown("### Please Login to Continue")
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -328,25 +328,11 @@ def show_login():
                 else:
                     st.error("❌ Please enter both username and password")
         
-        # Default credentials info
-        with st.expander("🔑 Default Login Credentials"):
-            st.markdown("""
-            **Warehouse Manager:** (Full Access)
-            - Username: `warehouse_manager`
-            - Password: `manager123`
-            
-            **Boss/Owner:** (View All, Limited Edit)
-            - Username: `boss` 
-            - Password: `boss123`
-            
-            **Staff Viewer:** (Final Products Only)
-            - Username: `viewer`
-            - Password: `viewer123`
-            """)
+        # Remove default credentials display for security
 
 # Main application
 def main():
-    st.set_page_config(page_title="🔥  Stock Control", layout="wide")
+    st.set_page_config(page_title="🔥 Fire Extinguisher Stock Control", layout="wide")
     
     # Initialize databases
     init_database()
@@ -400,13 +386,12 @@ def main():
             show_final_products_view()
             
     elif user_role == "boss":
-        # Boss sees everything but limited editing
+        # Boss menu without user management
         menu = st.sidebar.selectbox("Select Module", [
             "📊 Management Dashboard",
             "📦 Complete Stock View", 
             "📈 Stock Movements",
-            "📋 Management Reports",
-            "👥 User Management"
+            "📋 Management Reports"
         ])
         
         if menu == "📊 Management Dashboard":
@@ -417,11 +402,9 @@ def main():
             show_stock_movements()
         elif menu == "📋 Management Reports":
             show_management_reports()
-        elif menu == "👥 User Management":
-            show_user_management()
             
     else:  # warehouse_manager
-        # Full access
+        # Full access menu without user management
         menu = st.sidebar.selectbox("Select Module", [
             "📊 Dashboard",
             "📦 Stock Management", 
@@ -431,8 +414,7 @@ def main():
             "🧾 Bill of Materials",
             "🏪 Warehouse Areas",
             "📋 Reports",
-            "💾 Excel Import/Export",
-            "👥 User Management"
+            "💾 Excel Import/Export"
         ])
         
         if menu == "📊 Dashboard":
@@ -453,8 +435,6 @@ def main():
             show_reports()
         elif menu == "💾 Excel Import/Export":
             show_excel_integration()
-        elif menu == "👥 User Management":
-            show_user_management()
 
 def show_final_products_dashboard():
     """Dashboard for viewers - final products only"""
@@ -867,6 +847,493 @@ def show_deployment_info():
 
 # Include all other necessary functions (show_item_management, show_bom_management, etc.)
 # They would follow the same pattern with permission checks
+
+def show_production_center():
+    """Production center for warehouse manager"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Warehouse Manager access required.")
+        return
+    
+    st.header("🏭 Production Center")
+    st.write("*Automatically deducts ingredients when producing final products*")
+    
+    items_df = get_all_items()
+    final_products = items_df[items_df['category'] == 'Final Product']
+    
+    if final_products.empty:
+        st.warning("No final products found. Please add final products and their BOMs first.")
+        return
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Production Details")
+        selected_product = st.selectbox("Select Product to Produce",
+                                      options=final_products['id'].tolist(),
+                                      format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}")
+        
+        quantity_to_produce = st.number_input("Quantity to Produce", min_value=1, value=1)
+        batch_number = st.text_input("Batch Number", placeholder="e.g., LB2507")
+        
+        if st.button("🚀 Start Production", type="primary"):
+            if selected_product and quantity_to_produce > 0:
+                success, message = produce_item(selected_product, quantity_to_produce)
+                
+                if success:
+                    if batch_number:
+                        update_stock(selected_product, 0, 'BATCH_UPDATE', f'Batch: {batch_number}', batch_number, st.session_state.username)
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+    
+    with col2:
+        if selected_product:
+            st.subheader("📋 Production Requirements")
+            product_info = final_products[final_products['id'] == selected_product].iloc[0]
+            st.write(f"**Product:** {product_info['name']}")
+            st.write(f"**Current Stock:** {product_info['current_stock']} {product_info['unit']}")
+            
+            bom = get_bom(selected_product)
+            
+            if not bom.empty:
+                st.write("**Required Ingredients:**")
+                can_produce = True
+                max_possible = float('inf')
+                
+                for _, row in bom.iterrows():
+                    required_qty = row['quantity_required'] * quantity_to_produce
+                    available_qty = row['current_stock']
+                    
+                    possible_units = int(available_qty / row['quantity_required']) if row['quantity_required'] > 0 else 0
+                    max_possible = min(max_possible, possible_units)
+                    
+                    if available_qty >= required_qty:
+                        status = "✅"
+                        can_produce = can_produce and True
+                    else:
+                        status = "❌"
+                        can_produce = False
+                    
+                    st.markdown(f"{status} **{row['ingredient_name']}**: {required_qty} {row['unit']} "
+                              f"(Available: {available_qty})")
+                
+                if max_possible == float('inf'):
+                    max_possible = 0
+                
+                if can_produce:
+                    st.success(f"✅ **Can produce {quantity_to_produce} units**")
+                else:
+                    st.error(f"❌ **Cannot produce {quantity_to_produce} units**")
+                
+                st.info(f"💡 **Maximum possible production:** {max_possible} units")
+            else:
+                st.warning("⚠️ No Bill of Materials found for this product. Please set up the BOM first.")
+
+def show_stock_movements():
+    """Show stock movement history"""
+    st.header("📈 Stock Movement History")
+    
+    # Get movements data
+    conn = sqlite3.connect('inventory.db')
+    movements_df = pd.read_sql_query('''SELECT sm.*, i.name as item_name, i.unit, i.category
+                                       FROM stock_movements sm
+                                       JOIN items i ON sm.item_id = i.id
+                                       ORDER BY sm.date_time DESC LIMIT 1000''', conn)
+    conn.close()
+    
+    if not movements_df.empty:
+        movements_df['date_time'] = pd.to_datetime(movements_df['date_time']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        display_df = movements_df[['date_time', 'item_name', 'movement_type', 'quantity', 'unit', 'batch_nr', 'reference', 'user_id']]
+        display_df.columns = ['Date/Time', 'Item', 'Type', 'Quantity', 'Unit', 'Batch #', 'Reference', 'User']
+        
+        st.dataframe(display_df, use_container_width=True, height=500)
+    else:
+        st.info("No stock movements found.")
+
+def show_item_management():
+    """Item management interface"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Warehouse Manager access required.")
+        return
+    
+    st.header("⚙️ Item Management")
+    
+    tab1, tab2 = st.tabs(["Add New Item", "Manage Existing Items"])
+    
+    with tab1:
+        st.subheader("Add New Item")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            item_id = st.text_input("Item ID", value=str(uuid.uuid4())[:8].upper())
+            name = st.text_input("Item Name")
+            category = st.selectbox("Category", ["Raw Material", "Pre-Final", "Final Product"])
+            unit = st.selectbox("Unit of Measure", ["kg", "g", "L", "ml", "pieces", "units", "m", "cm"])
+        
+        with col2:
+            current_stock = st.number_input("Current Stock", min_value=0.0, value=0.0)
+            min_stock = st.number_input("Minimum Stock Level", min_value=0.0, value=0.0)
+            cost_per_unit = st.number_input("Cost per Unit", min_value=0.0, value=0.0)
+            
+            areas_df = get_warehouse_areas()
+            warehouse_area = st.selectbox("Warehouse Area", areas_df['area_name'].tolist())
+        
+        if st.button("Add Item"):
+            if name and item_id:
+                add_item(item_id, name, category, unit, current_stock, min_stock, cost_per_unit, "Main", warehouse_area, st.session_state.username)
+                st.success(f"Item '{name}' added successfully!")
+                st.rerun()
+            else:
+                st.error("Please fill in Item ID and Name")
+    
+    with tab2:
+        st.subheader("Existing Items")
+        items_df = get_all_items()
+        
+        if not items_df.empty:
+            st.dataframe(items_df, use_container_width=True, height=400)
+        else:
+            st.info("No items found.")
+
+def show_bom_management():
+    """Bill of Materials management"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Warehouse Manager access required.")
+        return
+    
+    st.header("🧾 Bill of Materials Management")
+    
+    items_df = get_all_items()
+    if items_df.empty:
+        st.warning("Please add items first before creating Bill of Materials.")
+        return
+    
+    tab1, tab2 = st.tabs(["Create/Edit BOM", "View Existing BOMs"])
+    
+    with tab1:
+        st.subheader("Create Bill of Materials")
+        
+        final_products = items_df[items_df['category'] == 'Final Product']
+        if final_products.empty:
+            st.warning("No final products found. Please add final products first.")
+            return
+        
+        selected_product = st.selectbox("Select Final Product",
+                                      options=final_products['id'].tolist(),
+                                      format_func=lambda x: f"{x} - {final_products[final_products['id']==x]['name'].iloc[0]}")
+        
+        if selected_product:
+            st.subheader(f"BOM for: {final_products[final_products['id']==selected_product]['name'].iloc[0]}")
+            
+            existing_bom = get_bom(selected_product)
+            if not existing_bom.empty:
+                st.write("**Current BOM:**")
+                display_bom = existing_bom[['ingredient_name', 'quantity_required', 'unit', 'current_stock']]
+                display_bom.columns = ['Ingredient', 'Qty Required', 'Unit', 'Available']
+                st.dataframe(display_bom, use_container_width=True)
+            
+            st.write("**Add Ingredient:**")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                available_ingredients = items_df[items_df['category'].isin(['Raw Material', 'Pre-Final'])]
+                ingredient = st.selectbox("Select Ingredient",
+                                        options=available_ingredients['id'].tolist(),
+                                        format_func=lambda x: f"{x} - {available_ingredients[available_ingredients['id']==x]['name'].iloc[0]}")
+            
+            with col2:
+                quantity_required = st.number_input("Quantity Required per Unit", min_value=0.001, value=1.0)
+            
+            if st.button("Add to BOM"):
+                add_bom_item(selected_product, ingredient, quantity_required)
+                st.success("Ingredient added to BOM!")
+                st.rerun()
+    
+    with tab2:
+        st.subheader("Existing BOMs")
+        final_products = items_df[items_df['category'] == 'Final Product']
+        
+        for _, product in final_products.iterrows():
+            bom = get_bom(product['id'])
+            if not bom.empty:
+                with st.expander(f"📋 {product['name']} ({product['id']})"):
+                    display_bom = bom[['ingredient_name', 'quantity_required', 'unit', 'current_stock']]
+                    display_bom.columns = ['Ingredient', 'Qty Required', 'Unit', 'Available Stock']
+                    st.dataframe(display_bom, use_container_width=True)
+
+def show_warehouse_areas():
+    """Warehouse areas management"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Warehouse Manager access required.")
+        return
+    
+    st.header("🏪 Warehouse Areas Management")
+    
+    areas_df = get_warehouse_areas()
+    items_df = get_all_items()
+    
+    for _, area in areas_df.iterrows():
+        area_items = items_df[items_df['warehouse_area'] == area['area_name']]
+        
+        with st.expander(f"📦 {area['area_name']} ({len(area_items)} items)"):
+            st.write(f"**Description:** {area['description']}")
+            
+            if not area_items.empty:
+                for _, item in area_items.iterrows():
+                    status = "✅" if item['current_stock'] > item['min_stock'] else "⚠️" if item['current_stock'] > 0 else "❌"
+                    st.write(f"{status} {item['name']}: {item['current_stock']} {item['unit']}")
+
+def show_reports():
+    """Reports and analytics"""
+    st.header("📋 Reports & Analytics")
+    
+    items_df = get_all_items()
+    if items_df.empty:
+        st.info("No data available for reports.")
+        return
+    
+    tab1, tab2 = st.tabs(["Stock Summary", "Production Analysis"])
+    
+    with tab1:
+        st.subheader("Current Stock Summary")
+        summary_stats = items_df.groupby('category').agg({
+            'current_stock': 'sum',
+            'name': 'count'
+        }).rename(columns={'name': 'item_count'})
+        
+        st.dataframe(summary_stats)
+        
+        low_stock = items_df[items_df['current_stock'] <= items_df['min_stock']]
+        if not low_stock.empty:
+            st.subheader("⚠️ Items Requiring Attention")
+            display_low = low_stock[['name', 'category', 'current_stock', 'min_stock', 'unit']]
+            display_low.columns = ['Item', 'Category', 'Current', 'Minimum', 'Unit']
+            st.dataframe(display_low, use_container_width=True)
+    
+    with tab2:
+        st.subheader("Production Feasibility Analysis")
+        final_products = items_df[items_df['category'] == 'Final Product']
+        
+        production_analysis = []
+        for _, product in final_products.iterrows():
+            bom = get_bom(product['id'])
+            if not bom.empty:
+                max_production = float('inf')
+                limiting_ingredient = ""
+                
+                for _, ingredient in bom.iterrows():
+                    if ingredient['quantity_required'] > 0:
+                        possible_qty = ingredient['current_stock'] / ingredient['quantity_required']
+                        if possible_qty < max_production:
+                            max_production = possible_qty
+                            limiting_ingredient = ingredient['ingredient_name']
+                
+                max_production = int(max_production) if max_production != float('inf') else 0
+                
+                production_analysis.append({
+                    'Product': product['name'],
+                    'Current Stock': product['current_stock'],
+                    'Max Possible Production': max_production,
+                    'Limiting Ingredient': limiting_ingredient,
+                    'Status': '✅ Can Produce' if max_production > 0 else '❌ Cannot Produce'
+                })
+        
+        if production_analysis:
+            production_df = pd.DataFrame(production_analysis)
+            st.dataframe(production_df, use_container_width=True)
+
+def show_excel_integration():
+    """Excel import/export functionality"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied. Warehouse Manager access required.")
+        return
+    
+    st.header("💾 Excel Import/Export")
+    
+    tab1, tab2 = st.tabs(["Export to Excel", "Import from Excel"])
+    
+    with tab1:
+        st.subheader("Export Data to Excel")
+        st.write("Download your inventory data")
+        
+        if st.button("🔄 Generate Excel File"):
+            items_df = get_all_items()
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Export by category
+                for category in ['Raw Material', 'Pre-Final', 'Final Product']:
+                    cat_df = items_df[items_df['category'] == category]
+                    sheet_name = category.replace(' ', '_').upper()
+                    cat_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+                items_df.to_excel(writer, sheet_name='ALL_ITEMS', index=False)
+            
+            st.download_button(
+                label="📥 Download Excel File",
+                data=output.getvalue(),
+                file_name=f"inventory_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    with tab2:
+        st.subheader("Import Items from Excel")
+        st.write("Upload your existing Excel file to import items with automatic warehouse area assignment")
+        
+        uploaded_file = st.file_uploader("Choose Excel file", type=['xlsx', 'xls'])
+        
+        if uploaded_file is not None:
+            st.write("**File uploaded successfully!**")
+            
+            if st.button("📤 Import Data"):
+                success, message = import_from_excel_with_areas(uploaded_file)
+                
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+
+def get_bom(final_product_id):
+    """Get Bill of Materials for a product"""
+    conn = sqlite3.connect('inventory.db')
+    query = '''SELECT b.*, i.name as ingredient_name, i.unit, i.current_stock
+               FROM bom b
+               JOIN items i ON b.ingredient_id = i.id
+               WHERE b.final_product_id = ?'''
+    df = pd.read_sql_query(query, conn, params=[final_product_id])
+    conn.close()
+    return df
+
+def add_bom_item(final_product_id, ingredient_id, quantity_required):
+    """Add item to Bill of Materials"""
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO bom (final_product_id, ingredient_id, quantity_required)
+                 VALUES (?, ?, ?)''', (final_product_id, ingredient_id, quantity_required))
+    conn.commit()
+    conn.close()
+
+def produce_item(final_product_id, quantity_to_produce):
+    """Produce final product and automatically deduct ingredients"""
+    conn = sqlite3.connect('inventory.db')
+    
+    bom_df = get_bom(final_product_id)
+    
+    if bom_df.empty:
+        return False, "No Bill of Materials found for this product"
+    
+    # Check if enough ingredients available
+    insufficient_ingredients = []
+    for _, row in bom_df.iterrows():
+        required_qty = row['quantity_required'] * quantity_to_produce
+        if row['current_stock'] < required_qty:
+            insufficient_ingredients.append(f"{row['ingredient_name']}: Need {required_qty}, Have {row['current_stock']}")
+    
+    if insufficient_ingredients:
+        return False, f"Insufficient ingredients: {'; '.join(insufficient_ingredients)}"
+    
+    try:
+        # Deduct ingredients
+        for _, row in bom_df.iterrows():
+            required_qty = row['quantity_required'] * quantity_to_produce
+            update_stock(row['ingredient_id'], required_qty, 'OUT', f'Production of {quantity_to_produce} units', 'PRODUCTION', st.session_state.username)
+        
+        # Add final product to stock
+        update_stock(final_product_id, quantity_to_produce, 'PRODUCTION', f'Production completed', '', st.session_state.username)
+        
+        return True, f"Successfully produced {quantity_to_produce} units"
+    
+    except Exception as e:
+        return False, f"Error during production: {str(e)}"
+
+def show_management_reports():
+    """Management reports for boss"""
+    st.header("📋 Management Reports")
+    
+    items_df = get_all_items()
+    if items_df.empty:
+        st.info("No data available for reports.")
+        return
+    
+    tab1, tab2, tab3 = st.tabs(["Executive Summary", "Financial Overview", "Operational Metrics"])
+    
+    with tab1:
+        st.subheader("📊 Executive Summary")
+        
+        # Key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_items = len(items_df)
+            st.metric("Total SKUs", total_items)
+        
+        with col2:
+            critical_items = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Critical Items", critical_items, delta=f"-{critical_items}" if critical_items > 0 else None)
+        
+        with col3:
+            low_stock_items = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
+            st.metric("Low Stock Items", low_stock_items)
+        
+        with col4:
+            final_products_ready = len(items_df[(items_df['category'] == 'Final Product') & (items_df['current_stock'] > 0)])
+            st.metric("Products Ready", final_products_ready)
+        
+        # Category breakdown
+        st.subheader("Inventory by Category")
+        category_summary = items_df.groupby('category').agg({
+            'current_stock': 'sum',
+            'name': 'count'
+        }).rename(columns={'name': 'item_count', 'current_stock': 'total_stock'})
+        
+        st.dataframe(category_summary, use_container_width=True)
+    
+    with tab2:
+        st.subheader("💰 Financial Overview")
+        
+        # Calculate inventory value
+        items_df['stock_value'] = items_df['current_stock'] * items_df['cost_per_unit']
+        
+        total_value = items_df['stock_value'].sum()
+        st.metric("Total Inventory Value", f"R{total_value:,.2f}")
+        
+        # Value by category
+        value_by_category = items_df.groupby('category')['stock_value'].sum().sort_values(ascending=False)
+        
+        st.subheader("Value by Category")
+        for category, value in value_by_category.items():
+            percentage = (value / total_value * 100) if total_value > 0 else 0
+            st.write(f"**{category}**: R{value:,.2f} ({percentage:.1f}%)")
+    
+    with tab3:
+        st.subheader("⚙️ Operational Metrics")
+        
+        # Stock movements in last 30 days
+        conn = sqlite3.connect('inventory.db')
+        movements_df = pd.read_sql_query('''
+            SELECT movement_type, COUNT(*) as count, SUM(quantity) as total_quantity
+            FROM stock_movements 
+            WHERE date_time >= date('now', '-30 days')
+            GROUP BY movement_type
+        ''', conn)
+        conn.close()
+        
+        if not movements_df.empty:
+            st.subheader("Stock Activity (Last 30 Days)")
+            st.dataframe(movements_df, use_container_width=True)
+        
+        # Warehouse utilization
+        st.subheader("Warehouse Area Utilization")
+        area_utilization = items_df.groupby('warehouse_area').agg({
+            'name': 'count',
+            'current_stock': 'sum'
+        }).rename(columns={'name': 'item_count', 'current_stock': 'total_stock'})
+        
+        st.dataframe(area_utilization, use_container_width=True)
 
 if __name__ == "__main__":
     main()
