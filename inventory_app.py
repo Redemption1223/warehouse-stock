@@ -389,7 +389,7 @@ def show_login():
 # Main application
 def main():
     st.set_page_config(
-        page_title="🔥 Fire Extinguisher Stock Control", 
+        page_title="Stock Control", 
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={
