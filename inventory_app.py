@@ -381,15 +381,20 @@ def show_login():
         # Professional footer
         st.markdown("""
         <div style="text-align: center; margin-top: 2rem; color: #666; font-size: 0.9rem;">
-            <p>🔒 Secure • 📱 Multi-Device • ⚡ Real-Time</p>
+            <p>🔒 Secure • 📱 Mobile Optimized • ⚡ Real-Time</p>
             <p style="font-size: 0.8rem;">Professional inventory management for fire safety equipment</p>
+            <div style="margin-top: 1rem; padding: 1rem; background: #f0f8ff; border-radius: 8px; border: 1px solid #ddeeff;">
+                <strong>📱 Mobile Users:</strong><br>
+                After login, use the dropdown menu at the top to navigate between sections.<br>
+                <small>Perfect for warehouse staff on tablets and phones!</small>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
 # Main application
 def main():
     st.set_page_config(
-        page_title="Stock Control", 
+        page_title="tock Control", 
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={
@@ -399,7 +404,7 @@ def main():
         }
     )
     
-    # Hide Streamlit style elements
+    # Hide Streamlit style elements and add mobile navigation
     hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -416,8 +421,8 @@ def main():
     /* Custom professional styling */
     .main .block-container {
         max-width: 100%;
-        padding-left: 2rem;
-        padding-right: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
     }
     
     /* Hide edit and fullscreen buttons on dataframes */
@@ -455,6 +460,84 @@ def main():
     .js-plotly-plot .plotly .modebar {
         display: none;
     }
+    
+    /* Mobile Navigation Styles */
+    .mobile-nav {
+        display: none;
+        background: #FF4B4B;
+        padding: 0.5rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .mobile-nav select {
+        width: 100%;
+        padding: 0.75rem;
+        border: none;
+        border-radius: 6px;
+        background: white;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #262730;
+    }
+    
+    /* Show mobile nav on small screens */
+    @media (max-width: 768px) {
+        .mobile-nav {
+            display: block;
+        }
+        
+        /* Hide sidebar on mobile */
+        .css-1d391kg {
+            display: none;
+        }
+        
+        /* Adjust main content padding on mobile */
+        .main .block-container {
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+        }
+        
+        /* Better mobile table display */
+        .stDataFrame {
+            font-size: 0.8rem;
+        }
+        
+        /* Mobile responsive metrics */
+        .css-1r6slb0 {
+            flex-wrap: wrap;
+        }
+        
+        /* Stack columns on mobile */
+        .element-container .stColumns {
+            flex-direction: column;
+        }
+    }
+    
+    /* Floating menu button for mobile */
+    .mobile-menu-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #FF4B4B;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 60px;
+        height: 60px;
+        font-size: 1.5rem;
+        cursor: pointer;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        z-index: 1000;
+        display: none;
+    }
+    
+    @media (max-width: 768px) {
+        .mobile-menu-btn {
+            display: block;
+        }
+    }
     </style>
     """
     st.markdown(hide_streamlit_style, unsafe_allow_html=True)
@@ -476,16 +559,16 @@ def main():
             st.success("✅ Loaded your existing inventory data!")
             st.rerun()
     
-    # Header with user info and logout
-    col1, col2, col3 = st.columns([3, 1, 1])
+    # Header with user info and logout - Mobile optimized
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         st.markdown("""
         <div style="display: flex; align-items: center; margin-bottom: 1rem;">
-            <div style="font-size: 2.5rem; margin-right: 1rem;">🔥</div>
+            <div style="font-size: 2rem; margin-right: 0.5rem;">🔥</div>
             <div>
-                <h1 style="margin: 0; color: #262730;">Fire Extinguisher Stock Control</h1>
-                <p style="margin: 0; color: #666; font-size: 0.9rem;">Professional Inventory Management System</p>
+                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;">Fire Extinguisher Stock Control</h1>
+                <p style="margin: 0; color: #666; font-size: 0.8rem;">Professional Inventory Management</p>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -498,6 +581,10 @@ def main():
         }
         st.markdown(f"**{role_display.get(user_role, user_role)} - {st.session_state.full_name}**")
     
+    with col2:
+        # Quick navigation for mobile - always visible
+        st.markdown("**📱 Quick Menu:**")
+        
     with col3:
         # Professional logout button
         if st.button("🚪 Logout", type="secondary", use_container_width=True):
@@ -512,7 +599,81 @@ def main():
     
     st.markdown("---")
     
-    # Professional footer
+    # Mobile Navigation Menu
+    def show_mobile_navigation(user_role):
+        """Show mobile-friendly navigation"""
+        if user_role == "viewer":
+            mobile_options = {
+                "📊 Final Products Dashboard": "final_dashboard",
+                "📦 Final Products View": "final_view"
+            }
+        elif user_role == "boss":
+            mobile_options = {
+                "📊 Management Dashboard": "mgmt_dashboard",
+                "📦 Complete Stock View": "complete_view", 
+                "📈 Stock Movements": "movements",
+                "📋 Management Reports": "mgmt_reports"
+            }
+        else:  # warehouse_manager
+            mobile_options = {
+                "📊 Dashboard": "dashboard",
+                "📦 Stock Management": "stock_mgmt", 
+                "🏭 Production Center": "production",
+                "📈 Stock Movements": "movements",
+                "⚙️ Item Management": "items",
+                "🧾 Bill of Materials": "bom",
+                "🏪 Warehouse Areas": "areas",
+                "📋 Reports": "reports",
+                "💾 Excel Import/Export": "excel",
+                "👥 User Management": "users"
+            }
+        
+        # Mobile navigation dropdown
+        st.markdown("""
+        <div class="mobile-nav">
+            <p style="color: white; margin: 0 0 0.5rem 0; font-weight: bold; text-align: center;">📱 Choose Your Section</p>
+            <p style="color: white; margin: 0 0 0.5rem 0; font-size: 0.8rem; text-align: center; opacity: 0.9;">Select from dropdown below to navigate</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Store current selection in session state
+        if 'mobile_menu_selection' not in st.session_state:
+            st.session_state.mobile_menu_selection = list(mobile_options.keys())[0]
+        
+        # Mobile menu selector with better UX
+        selected_option = st.selectbox(
+            "🔥 Navigate to:",
+            options=list(mobile_options.keys()),
+            key="mobile_navigation",
+            index=list(mobile_options.keys()).index(st.session_state.mobile_menu_selection),
+            help="Choose a section to view. This menu is always available for easy navigation on mobile devices."
+        )
+        
+        # Update session state
+        st.session_state.mobile_menu_selection = selected_option
+        
+        # Mobile navigation tip
+        st.markdown("""
+        <div style="background: #e8f4fd; padding: 0.5rem; border-radius: 4px; margin-bottom: 1rem; display: block;">
+            <small style="color: #1f4e79;">
+                💡 <strong>Mobile Tip:</strong> This navigation menu is always at the top of the page for easy section switching.
+            </small>
+        </div>
+        
+        <script>
+        // Show mobile nav only on mobile devices
+        if (window.innerWidth <= 768) {
+            document.querySelector('.mobile-nav').style.display = 'block';
+        }
+        </script>
+        """, unsafe_allow_html=True)
+        
+        return mobile_options[selected_option]
+    
+    # Get menu selection for mobile
+    mobile_selection = show_mobile_navigation(st.session_state.user_role)
+    
+    # Professional footer with mobile optimization
     st.markdown("""
     <div style="text-align: center; margin-top: 2rem; padding: 1rem; background-color: #f8f9fa; border-radius: 5px;">
         <p style="margin: 0; color: #666; font-size: 0.9rem;">
@@ -521,46 +682,81 @@ def main():
             📅 {date} | 
             🔒 Secure Business Solution
         </p>
+        <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #888;">
+            📱 Mobile Optimized • 💻 Multi-Device • ⚡ Real-Time Updates
+        </div>
     </div>
+    
+    <!-- Mobile back to top -->
+    <button onclick="window.scrollTo(0,0)" class="mobile-menu-btn" title="Back to Navigation">
+        ⬆️
+    </button>
+    
+    <script>
+    // Mobile navigation enhancement
+    function isMobile() {
+        return window.innerWidth <= 768;
+    }
+    
+    // Show/hide mobile elements based on screen size
+    function updateMobileUI() {
+        const mobileNav = document.querySelector('.mobile-nav');
+        const mobileBtn = document.querySelector('.mobile-menu-btn');
+        
+        if (isMobile()) {
+            if (mobileNav) mobileNav.style.display = 'block';
+            if (mobileBtn) mobileBtn.style.display = 'block';
+        } else {
+            if (mobileNav) mobileNav.style.display = 'none';
+            if (mobileBtn) mobileBtn.style.display = 'none';
+        }
+    }
+    
+    // Run on load and resize
+    window.addEventListener('load', updateMobileUI);
+    window.addEventListener('resize', updateMobileUI);
+    </script>
     """.format(
         user=st.session_state.full_name,
         date=datetime.now().strftime("%Y-%m-%d")
     ), unsafe_allow_html=True)
     
-    # Navigation based on user role
+    # Navigation based on user role and device
     if user_role == "viewer":
         # Viewers only see final products
-        menu = st.sidebar.selectbox("Select Module", [
+        sidebar_menu = st.sidebar.selectbox("Select Module", [
             "📊 Final Products Dashboard",
             "📦 Final Products View"
         ])
         
-        if menu == "📊 Final Products Dashboard":
+        # Use mobile selection if on mobile, otherwise use sidebar
+        if mobile_selection == "final_dashboard" or sidebar_menu == "📊 Final Products Dashboard":
             show_final_products_dashboard()
-        elif menu == "📦 Final Products View":
+        elif mobile_selection == "final_view" or sidebar_menu == "📦 Final Products View":
             show_final_products_view()
             
     elif user_role == "boss":
-        # Boss menu without user management
-        menu = st.sidebar.selectbox("Select Module", [
+        # Boss sees everything but limited editing
+        sidebar_menu = st.sidebar.selectbox("Select Module", [
             "📊 Management Dashboard",
             "📦 Complete Stock View", 
             "📈 Stock Movements",
             "📋 Management Reports"
         ])
         
-        if menu == "📊 Management Dashboard":
+        # Use mobile selection if on mobile, otherwise use sidebar
+        if mobile_selection == "mgmt_dashboard" or sidebar_menu == "📊 Management Dashboard":
             show_management_dashboard()
-        elif menu == "📦 Complete Stock View":
+        elif mobile_selection == "complete_view" or sidebar_menu == "📦 Complete Stock View":
             show_complete_stock_view()
-        elif menu == "📈 Stock Movements":
+        elif mobile_selection == "movements" or sidebar_menu == "📈 Stock Movements":
             show_stock_movements()
-        elif menu == "📋 Management Reports":
+        elif mobile_selection == "mgmt_reports" or sidebar_menu == "📋 Management Reports":
             show_management_reports()
             
     else:  # warehouse_manager
         # Full access menu with user management
-        menu = st.sidebar.selectbox("Select Module", [
+        sidebar_menu = st.sidebar.selectbox("Select Module", [
             "📊 Dashboard",
             "📦 Stock Management", 
             "🏭 Production Center",
@@ -573,25 +769,26 @@ def main():
             "👥 User Management"
         ])
         
-        if menu == "📊 Dashboard":
+        # Use mobile selection if on mobile, otherwise use sidebar
+        if mobile_selection == "dashboard" or sidebar_menu == "📊 Dashboard":
             show_dashboard()
-        elif menu == "📦 Stock Management":
+        elif mobile_selection == "stock_mgmt" or sidebar_menu == "📦 Stock Management":
             show_stock_management()
-        elif menu == "🏭 Production Center":
+        elif mobile_selection == "production" or sidebar_menu == "🏭 Production Center":
             show_production_center()
-        elif menu == "📈 Stock Movements":
+        elif mobile_selection == "movements" or sidebar_menu == "📈 Stock Movements":
             show_stock_movements()
-        elif menu == "⚙️ Item Management":
+        elif mobile_selection == "items" or sidebar_menu == "⚙️ Item Management":
             show_item_management()
-        elif menu == "🧾 Bill of Materials":
+        elif mobile_selection == "bom" or sidebar_menu == "🧾 Bill of Materials":
             show_bom_management()
-        elif menu == "🏪 Warehouse Areas":
+        elif mobile_selection == "areas" or sidebar_menu == "🏪 Warehouse Areas":
             show_warehouse_areas()
-        elif menu == "📋 Reports":
+        elif mobile_selection == "reports" or sidebar_menu == "📋 Reports":
             show_reports()
-        elif menu == "💾 Excel Import/Export":
+        elif mobile_selection == "excel" or sidebar_menu == "💾 Excel Import/Export":
             show_excel_integration()
-        elif menu == "👥 User Management":
+        elif mobile_selection == "users" or sidebar_menu == "👥 User Management":
             show_user_management()
 
 def show_final_products_dashboard():
