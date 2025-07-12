@@ -332,7 +332,7 @@ def show_login():
 
 # Main application
 def main():
-    st.set_page_config(page_title="🔥 Fire Extinguisher Stock Control", layout="wide")
+    st.set_page_config(page_title=" Stock Control", layout="wide")
     
     # Initialize databases
     init_database()
