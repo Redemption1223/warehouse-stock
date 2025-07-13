@@ -363,7 +363,7 @@ def show_login():
     st.markdown("""
     <div class="login-header">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🔥</div>
-        <h1 style="margin: 0; font-size: 2rem;">Fire Extinguisher</h1>
+        <h1 style="margin: 0; font-size: 2rem;">FLAMEBLOCK</h1>
         <h2 style="margin: 0; font-size: 1.6rem; opacity: 0.9;">Inventory System</h2>
         <p style="margin: 0.5rem 0 0 0; font-size: 1rem; opacity: 0.8;">Professional Stock Control</p>
     </div>
@@ -587,7 +587,7 @@ def main():
         <div style="display: flex; align-items: center; margin-bottom: 1rem;">
             <div style="font-size: 2rem; margin-right: 0.5rem;">🔥</div>
             <div>
-                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;">Fire Extinguisher Stock Control</h1>
+                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;"> Stock Control</h1>
                 <p style="margin: 0; color: #666; font-size: 0.8rem;">Professional Inventory Management</p>
             </div>
         </div>
