@@ -976,32 +976,152 @@ def show_item_management():
         st.error("❌ Access denied.")
         return
     
-    st.header("⚙️ Items")
+    st.header("⚙️ Item Management")
     
-    tab1, tab2 = st.tabs(["Add Item", "View Items"])
+    tab1, tab2 = st.tabs(["➕ Add Item", "📋 View & Delete Items"])
     
     with tab1:
         st.subheader("Add New Item")
         
-        item_id = st.text_input("ID", value=str(uuid.uuid4())[:8].upper())
-        name = st.text_input("Name")
+        item_id = st.text_input("Item ID", value=str(uuid.uuid4())[:8].upper())
+        name = st.text_input("Item Name")
         category = st.selectbox("Category", ["Raw Material", "Pre-Final", "Final Product"])
         unit = st.selectbox("Unit", ["kg", "g", "L", "ml", "pieces", "units"])
-        current_stock = st.number_input("Stock", min_value=0.0, value=0.0)
+        current_stock = st.number_input("Current Stock", min_value=0.0, value=0.0)
         min_stock = st.number_input("Min Stock", min_value=0.0, value=0.0)
         
-        if st.button("Add Item"):
+        if st.button("➕ Add Item", type="primary"):
             if name and item_id:
                 add_item(item_id, name, category, unit, current_stock, min_stock, 0, "Main", "General", st.session_state.username)
-                st.success(f"Added {name}!")
+                st.success(f"✅ Added {name}!")
                 st.rerun()
             else:
-                st.error("Please fill ID and Name")
+                st.error("❌ Please fill Item ID and Name")
     
     with tab2:
+        st.subheader("📋 All Items")
         items_df = get_all_items()
+        
         if not items_df.empty:
-            st.dataframe(items_df[['id', 'name', 'category', 'current_stock', 'unit']], use_container_width=True)
+            # Filter
+            category_filter = st.selectbox("Filter by Category", 
+                                         ["All", "Raw Material", "Pre-Final", "Final Product"])
+            
+            filtered_items = items_df.copy()
+            if category_filter != "All":
+                filtered_items = filtered_items[filtered_items['category'] == category_filter]
+            
+            # Add status column
+            def get_status(row):
+                if row['current_stock'] <= 0:
+                    return "❌ OUT"
+                elif row['current_stock'] <= row['min_stock']:
+                    return "⚠️ LOW"
+                else:
+                    return "✅ OK"
+            
+            filtered_items['Status'] = filtered_items.apply(get_status, axis=1)
+            
+            display_df = filtered_items[['id', 'name', 'category', 'current_stock', 'min_stock', 'unit', 'Status']]
+            display_df.columns = ['ID', 'Name', 'Category', 'Stock', 'Min', 'Unit', 'Status']
+            
+            st.dataframe(display_df, use_container_width=True, height=300)
+            
+            # DELETE SECTION - Very visible
+            st.markdown("---")
+            st.subheader("🗑️ DELETE ITEM")
+            st.warning("⚠️ **DANGER ZONE** - Item deletion cannot be undone!")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if not filtered_items.empty:
+                    item_to_delete = st.selectbox("🗑️ Select Item to DELETE", 
+                                                options=[""] + filtered_items['id'].tolist(),
+                                                format_func=lambda x: f"SELECT ITEM TO DELETE" if x == "" else f"DELETE: {x} - {filtered_items[filtered_items['id']==x]['name'].iloc[0]}")
+                    
+                    if item_to_delete and item_to_delete != "":
+                        item_info = filtered_items[filtered_items['id'] == item_to_delete].iloc[0]
+                        
+                        st.error(f"""
+                        **⚠️ ITEM TO BE DELETED:**
+                        - **ID:** {item_info['id']}
+                        - **Name:** {item_info['name']}
+                        - **Category:** {item_info['category']}
+                        - **Stock:** {item_info['current_stock']} {item_info['unit']}
+                        """)
+                        
+                        # Check BOM usage
+                        conn = sqlite3.connect('inventory.db')
+                        bom_check = pd.read_sql_query("""
+                            SELECT COUNT(*) as count FROM bom 
+                            WHERE ingredient_id = ? OR final_product_id = ?
+                        """, conn, params=[item_to_delete, item_to_delete])
+                        conn.close()
+                        
+                        if bom_check.iloc[0]['count'] > 0:
+                            st.warning("⚠️ This item is used in Bill of Materials!")
+            
+            with col2:
+                if item_to_delete and item_to_delete != "":
+                    st.write("**Deletion Controls:**")
+                    
+                    if st.button("🗑️ DELETE THIS ITEM", type="secondary", use_container_width=True):
+                        if st.session_state.get('confirm_delete_item') == item_to_delete:
+                            # DELETE THE ITEM
+                            conn = sqlite3.connect('inventory.db')
+                            c = conn.cursor()
+                            
+                            # Delete from all tables
+                            c.execute('DELETE FROM items WHERE id = ?', (item_to_delete,))
+                            c.execute('DELETE FROM bom WHERE final_product_id = ? OR ingredient_id = ?', 
+                                     (item_to_delete, item_to_delete))
+                            c.execute('DELETE FROM stock_movements WHERE item_id = ?', (item_to_delete,))
+                            
+                            conn.commit()
+                            conn.close()
+                            
+                            st.success(f"🗑️ DELETED '{item_info['name']}' successfully!")
+                            if 'confirm_delete_item' in st.session_state:
+                                del st.session_state['confirm_delete_item']
+                            st.rerun()
+                        else:
+                            st.session_state['confirm_delete_item'] = item_to_delete
+                            st.error("⚠️ CLICK DELETE AGAIN TO CONFIRM!")
+                    
+                    if st.button("❌ Cancel Deletion", use_container_width=True):
+                        if 'confirm_delete_item' in st.session_state:
+                            del st.session_state['confirm_delete_item']
+                        st.rerun()
+                    
+                    if item_info['current_stock'] > 0:
+                        if st.button(f"📉 Clear Stock ({item_info['current_stock']} {item_info['unit']})", use_container_width=True):
+                            update_stock(item_to_delete, item_info['current_stock'], 'OUT', 
+                                       'Stock cleared for deletion', '', st.session_state.username)
+                            st.success("Stock cleared to zero!")
+                            st.rerun()
+        else:
+            st.info("No items found.")
+        
+        # Quick stats
+        if not items_df.empty:
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Items", len(items_df))
+            
+            with col2:
+                active_items = len(items_df[items_df['current_stock'] > 0])
+                st.metric("Active Items", active_items)
+            
+            with col3:
+                low_stock_items = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
+                st.metric("Low Stock", low_stock_items)
+            
+            with col4:
+                zero_stock_items = len(items_df[items_df['current_stock'] <= 0])
+                st.metric("Zero Stock", zero_stock_items)
 
 def show_bom_management():
     """Bill of Materials management"""
