@@ -364,7 +364,7 @@ def show_login():
     <div class="login-header">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🔥</div>
         <h1 style="margin: 0; font-size: 2rem;">FLAMEBLOCK</h1>
-        <h2 style="margin: 0; font-size: 1.6rem; opacity: 0.9;">Inventory System</h2>
+        <h2 style="margin: 0; font-size: 1.6rem; opacity: 0.9;">INVENTORY SYSTEM</h2>
         <p style="margin: 0.5rem 0 0 0; font-size: 1rem; opacity: 0.8;">Professional Stock Control</p>
     </div>
     """, unsafe_allow_html=True)
@@ -499,9 +499,9 @@ def show_mobile_navigation(user_role):
 # Main application
 def main():
     st.set_page_config(
-        page_title="🔥 Fire Extinguisher Stock Control", 
+        page_title="🔥 FLAMEBLOCK INVENTORY SYSTEM",  # ← Browser tab name
         layout="wide",
-        initial_sidebar_state="collapsed",  # Start with sidebar collapsed for mobile
+        initial_sidebar_state="collapsed",
         menu_items={
             'Get Help': None,
             'Report a bug': None,
@@ -587,8 +587,8 @@ def main():
         <div style="display: flex; align-items: center; margin-bottom: 1rem;">
             <div style="font-size: 2rem; margin-right: 0.5rem;">🔥</div>
             <div>
-                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;"> Stock Control</h1>
-                <p style="margin: 0; color: #666; font-size: 0.8rem;">Professional Inventory Management</p>
+                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;">FLAMEBLOCK INVENTORY SYSTEM</h1>
+                <p style="margin: 0; color: #666; font-size: 0.8rem;">Professional Stock Control</p>
             </div>
         </div>
         """, unsafe_allow_html=True)
