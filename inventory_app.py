@@ -960,45 +960,54 @@ def show_admin_stock_update():
                 
                 with col3:
                     reference = st.text_input("Reference/Reason", placeholder="Stock count, delivery, etc.")
-                    submitted = st.form_submit_button("🔄 Update Stock", type="primary")
+                    submitted = st.form_submit_button("🔄 Update Stock", type="primary", use_container_width=True)
                 
-                if submitted and selected_item and quantity >= 0:
-                    current_item = items_df[items_df['id'] == selected_item].iloc[0]
-                    
-                    if update_type == "SET":
-                        # Set absolute value
-                        conn = sqlite3.connect('inventory.db')
-                        c = conn.cursor()
-                        c.execute("UPDATE items SET current_stock = ? WHERE id = ? AND branch_id = ?", 
-                                 (quantity, selected_item, selected_branch_id))
+                if submitted:
+                    if selected_item and quantity >= 0:
+                        current_item = items_df[items_df['id'] == selected_item].iloc[0]
                         
-                        # Record movement
-                        movement_type = "ADMIN_SET"
-                        c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, date_time, user_id)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                                  (selected_item, selected_branch_id, movement_type, quantity, reference, 
-                                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
-                        
-                        conn.commit()
-                        conn.close()
-                        
-                        st.success(f"✅ Set {current_item['name']} stock to {quantity} {current_item['unit']}")
-                        st.rerun()
-                    
-                    elif update_type == "ADD":
-                        update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', reference, '', st.session_state.username)
-                        st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']}")
-                        st.rerun()
-                    
-                    elif update_type == "SUBTRACT":
-                        if current_item['current_stock'] >= quantity:
-                            update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', reference, '', st.session_state.username)
-                            st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']}")
+                        if update_type == "SET":
+                            # Set absolute value
+                            conn = sqlite3.connect('inventory.db')
+                            c = conn.cursor()
+                            c.execute("UPDATE items SET current_stock = ? WHERE id = ? AND branch_id = ?", 
+                                     (quantity, selected_item, selected_branch_id))
+                            
+                            # Record movement
+                            movement_type = "ADMIN_SET"
+                            c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, date_time, user_id)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                                      (selected_item, selected_branch_id, movement_type, quantity, reference, 
+                                       datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
+                            
+                            conn.commit()
+                            conn.close()
+                            
+                            st.success(f"✅ Set {current_item['name']} stock to {quantity} {current_item['unit']}")
                             st.rerun()
-                        else:
-                            st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available.")
+                        
+                        elif update_type == "ADD":
+                            update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', reference, '', st.session_state.username)
+                            st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']}")
+                            st.rerun()
+                        
+                        elif update_type == "SUBTRACT":
+                            if current_item['current_stock'] >= quantity:
+                                update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', reference, '', st.session_state.username)
+                                st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available.")
+                    else:
+                        st.error("❌ Please enter a valid quantity")
         else:
-            st.info(f"No final products found in {branch_info['branch_name']}")
+            st.warning(f"⚠️ No final products found in **{branch_info['branch_name']}**")
+            st.info("💡 To add final products to this branch:")
+            st.markdown("""
+            1. **Transfer from another branch** (if you have final products elsewhere)
+            2. **Add new items** using the Item Management section
+            3. **Produce items** using the Production Center
+            """)
 
 def show_admin_branch_view():
     """Admin view of all branches and their final products"""
@@ -1498,23 +1507,28 @@ def show_stock_management():
             # Quick stock adjustment
             st.subheader("⚡ Quick Update")
             
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                selected_item = st.selectbox("Item", 
-                                           options=items_df['id'].tolist(),
-                                           format_func=lambda x: f"{x} - {items_df[items_df['id']==x]['name'].iloc[0]}")
-                adjustment_qty = st.number_input("Quantity", value=0.0)
-            
-            with col2:
-                movement_type = st.selectbox("Type", ["IN", "OUT"])
-                reference = st.text_input("Reference", placeholder="Reason")
-            
-            if st.button("💾 Update Stock", type="primary"):
-                if selected_item and adjustment_qty != 0:
-                    update_stock(selected_item, selected_branch_id, abs(adjustment_qty), movement_type, reference, "", st.session_state.username)
-                    st.success("Stock updated!")
-                    st.rerun()
+            with st.form("quick_stock_update"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    selected_item = st.selectbox("Item", 
+                                               options=items_df['id'].tolist(),
+                                               format_func=lambda x: f"{x} - {items_df[items_df['id']==x]['name'].iloc[0]}")
+                    adjustment_qty = st.number_input("Quantity", value=0.0)
+                
+                with col2:
+                    movement_type = st.selectbox("Type", ["IN", "OUT"])
+                    reference = st.text_input("Reference", placeholder="Reason")
+                
+                submitted = st.form_submit_button("💾 Update Stock", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if selected_item and adjustment_qty != 0:
+                        update_stock(selected_item, selected_branch_id, abs(adjustment_qty), movement_type, reference, "", st.session_state.username)
+                        st.success("✅ Stock updated!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Please select an item and enter a non-zero quantity")
 
 def show_stock_transfers():
     """Stock transfer interface between branches"""
@@ -1535,29 +1549,36 @@ def show_stock_transfers():
     with tab1:
         st.subheader("🔄 Transfer Stock Between Branches")
         
-        with st.form("stock_transfer_form"):
-            col1, col2 = st.columns(2)
+        # First, let user select branches without form
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            from_branch_id = st.selectbox(
+                "📤 From Branch",
+                options=branches_df['id'].tolist(),
+                format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+            )
+        
+        with col2:
+            to_branch_options = [bid for bid in branches_df['id'].tolist() if bid != from_branch_id]
+            to_branch_id = st.selectbox(
+                "📥 To Branch",
+                options=to_branch_options,
+                format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+            ) if to_branch_options else None
+        
+        if from_branch_id and to_branch_id:
+            # Get items from source branch
+            from_items_df = get_all_items(branch_id=from_branch_id)
+            available_items = from_items_df[from_items_df['current_stock'] > 0]
             
-            with col1:
-                from_branch_id = st.selectbox(
-                    "📤 From Branch",
-                    options=branches_df['id'].tolist(),
-                    format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
-                )
-            
-            with col2:
-                to_branch_id = st.selectbox(
-                    "📥 To Branch",
-                    options=[bid for bid in branches_df['id'].tolist() if bid != from_branch_id],
-                    format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
-                )
-            
-            if from_branch_id and to_branch_id:
-                # Get items from source branch
-                from_items_df = get_all_items(branch_id=from_branch_id)
-                available_items = from_items_df[from_items_df['current_stock'] > 0]
+            if not available_items.empty:
+                # Show available items first
+                from_branch_name = branches_df[branches_df['id'] == from_branch_id]['branch_name'].iloc[0]
+                st.info(f"📦 Available items in **{from_branch_name}**: {len(available_items)} items")
                 
-                if not available_items.empty:
+                # Now create the form
+                with st.form("stock_transfer_form"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -1570,24 +1591,42 @@ def show_stock_transfers():
                     with col2:
                         if selected_item:
                             max_qty = available_items[available_items['id'] == selected_item]['current_stock'].iloc[0]
-                            transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=0.0)
+                            transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=1.0)
                     
                     reference = st.text_input("Transfer Reference", placeholder="Reason for transfer")
                     
-                    submitted = st.form_submit_button("🔄 Transfer Stock", type="primary")
+                    # Submit button
+                    submitted = st.form_submit_button("🔄 Transfer Stock", type="primary", use_container_width=True)
                     
-                    if submitted and selected_item and transfer_qty > 0:
-                        success, message = transfer_stock_between_branches(
-                            selected_item, from_branch_id, to_branch_id, transfer_qty, reference, st.session_state.username
-                        )
-                        
-                        if success:
-                            st.success(message)
-                            st.rerun()
+                    if submitted:
+                        if selected_item and transfer_qty > 0:
+                            success, message = transfer_stock_between_branches(
+                                selected_item, from_branch_id, to_branch_id, transfer_qty, reference, st.session_state.username
+                            )
+                            
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
                         else:
-                            st.error(message)
+                            st.error("❌ Please select an item and enter a quantity greater than 0")
+            else:
+                from_branch_name = branches_df[branches_df['id'] == from_branch_id]['branch_name'].iloc[0]
+                st.warning(f"⚠️ No items with stock available in **{from_branch_name}**")
+                
+                # Show what items exist but have no stock
+                all_items_in_branch = get_all_items(branch_id=from_branch_id)
+                if not all_items_in_branch.empty:
+                    zero_stock_items = all_items_in_branch[all_items_in_branch['current_stock'] <= 0]
+                    if not zero_stock_items.empty:
+                        st.info(f"💡 There are {len(zero_stock_items)} items in this branch with zero stock:")
+                        for _, item in zero_stock_items.head(5).iterrows():
+                            st.write(f"- {item['name']}: {item['current_stock']} {item['unit']}")
                 else:
-                    st.warning("No items with stock available in the selected source branch.")
+                    st.info(f"💡 No items found in **{from_branch_name}**. Add items to this branch first.")
+        else:
+            st.info("👆 Please select both source and destination branches to start transfer.")
     
     with tab2:
         st.subheader("📈 Recent Transfers")
