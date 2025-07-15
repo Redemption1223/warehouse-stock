@@ -313,7 +313,7 @@ def get_all_items(user_role=None, branch_id=None):
     conn.close()
     return df
 
-def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quantity, reference="", user_id="system"):
+def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quantity, reference="", batch_nr="", invoice_nr="", po_nr="", user_id="system"):
     """Transfer stock between branches - available to warehouse managers and admins"""
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
@@ -352,20 +352,20 @@ def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quant
         c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ? AND branch_id = ?", 
                  (quantity, item_id, to_branch_id))
         
-        # Record movements
+        # Record movements with enhanced tracking
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Out movement from source branch
-        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, 
-                     date_time, user_id, from_branch_id, to_branch_id)
-                     VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?)""",
-                 (item_id, from_branch_id, quantity, reference, timestamp, user_id, from_branch_id, to_branch_id))
+        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                     invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
+                     VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (item_id, from_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
         
         # In movement to destination branch
-        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, 
-                     date_time, user_id, from_branch_id, to_branch_id)
-                     VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?)""",
-                 (item_id, to_branch_id, quantity, reference, timestamp, user_id, from_branch_id, to_branch_id))
+        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                     invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
+                     VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (item_id, to_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
         
         conn.commit()
         conn.close()
@@ -376,22 +376,22 @@ def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quant
         conn.close()
         return False, f"Transfer failed: {str(e)}"
 
-def update_stock(item_id, branch_id, quantity, movement_type, reference="", batch_nr="", user_id="system"):
+def update_stock(item_id, branch_id, quantity, movement_type, reference="", batch_nr="", invoice_nr="", po_nr="", user_id="system"):
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
     
     # Update current stock
-    if movement_type in ['IN', 'ADJUSTMENT_IN', 'PRODUCTION', 'TRANSFER_IN']:
+    if movement_type in ['IN', 'ADJUSTMENT_IN', 'PRODUCTION', 'TRANSFER_IN', 'ADMIN_IN']:
         c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ? AND branch_id = ?", 
                  (quantity, item_id, branch_id))
     else:
         c.execute("UPDATE items SET current_stock = current_stock - ? WHERE id = ? AND branch_id = ?", 
                  (quantity, item_id, branch_id))
     
-    # Record movement
-    c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, date_time, user_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-              (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+    # Record movement with enhanced tracking
+    c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr, date_time, user_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr,
                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
     
     conn.commit()
@@ -859,7 +859,7 @@ def show_final_products_view():
 
 # NEW ADMIN PAGES
 def show_admin_dashboard():
-    """Dashboard for admin users - final products summary"""
+    """Enhanced dashboard for admin users - final products with quantities by branch"""
     st.header("🔧 Stock Admin Dashboard")
     
     if not check_permission('admin'):
@@ -882,33 +882,73 @@ def show_admin_dashboard():
             st.metric("Active Branches", total_branches)
         
         with col3:
-            in_stock = len(items_df[items_df['current_stock'] > 0])
-            st.metric("In Stock", in_stock)
+            total_stock = items_df['current_stock'].sum()
+            st.metric("Total Stock Units", int(total_stock))
         
         with col4:
             out_of_stock = len(items_df[items_df['current_stock'] <= 0])
-            st.metric("Out of Stock", out_of_stock)
+            st.metric("Out of Stock Items", out_of_stock)
         
-        # Branch-wise summary
-        st.subheader("📊 Branch Summary")
+        # Stock by Branch Overview
+        st.subheader("📊 Stock Overview by Branch")
         
-        branch_summary = []
+        branch_overview = []
         for _, branch in branches_df.iterrows():
             branch_items = items_df[items_df['branch_id'] == branch['id']]
             if not branch_items.empty:
+                total_stock = branch_items['current_stock'].sum()
                 in_stock_count = len(branch_items[branch_items['current_stock'] > 0])
-                total_count = len(branch_items)
-                branch_summary.append({
+                out_of_stock_count = len(branch_items[branch_items['current_stock'] <= 0])
+                low_stock_count = len(branch_items[(branch_items['current_stock'] <= branch_items['min_stock']) & (branch_items['current_stock'] > 0)])
+                
+                # Status indicator
+                if out_of_stock_count > 0:
+                    status = f"🚨 {out_of_stock_count} Critical"
+                elif low_stock_count > 0:
+                    status = f"⚠️ {low_stock_count} Low"
+                else:
+                    status = "✅ Good"
+                
+                branch_overview.append({
                     'Branch': branch['branch_name'],
                     'Location': branch['location'],
-                    'Products': total_count,
+                    'Total Units': int(total_stock),
+                    'Products': len(branch_items),
                     'In Stock': in_stock_count,
-                    'Out of Stock': total_count - in_stock_count
+                    'Out of Stock': out_of_stock_count,
+                    'Status': status
                 })
         
-        if branch_summary:
-            summary_df = pd.DataFrame(branch_summary)
-            st.dataframe(summary_df, use_container_width=True)
+        if branch_overview:
+            overview_df = pd.DataFrame(branch_overview)
+            st.dataframe(overview_df, use_container_width=True)
+        
+        # Critical items across all branches
+        critical_items = items_df[items_df['current_stock'] <= 0]
+        if not critical_items.empty:
+            st.subheader("🚨 Critical Items (Out of Stock)")
+            critical_display = critical_items[['branch_name', 'name', 'current_stock', 'min_stock', 'unit']].copy()
+            critical_display.columns = ['Branch', 'Product', 'Current', 'Min Required', 'Unit']
+            st.dataframe(critical_display, use_container_width=True)
+        
+        # Low stock items
+        low_stock_items = items_df[(items_df['current_stock'] <= items_df['min_stock']) & (items_df['current_stock'] > 0)]
+        if not low_stock_items.empty:
+            st.subheader("⚠️ Low Stock Items")
+            low_stock_display = low_stock_items[['branch_name', 'name', 'current_stock', 'min_stock', 'unit']].copy()
+            low_stock_display.columns = ['Branch', 'Product', 'Current', 'Min Required', 'Unit']
+            st.dataframe(low_stock_display, use_container_width=True)
+        
+        if critical_items.empty and low_stock_items.empty:
+            st.success("✅ All final products have adequate stock levels across all branches!")
+    else:
+        st.info("📦 No final products found in the system.")
+        st.markdown("""
+        **To get started:**
+        - Ask warehouse manager to add final products
+        - Transfer items from other branches
+        - Check if products exist in the main warehouse
+        """)
 
 def show_admin_stock_update():
     """Admin interface for updating final product stock only"""
@@ -951,7 +991,7 @@ def show_admin_stock_update():
             st.subheader("🔄 Update Stock")
             
             with st.form("admin_stock_update"):
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
                     selected_item = st.selectbox(
@@ -959,14 +999,21 @@ def show_admin_stock_update():
                         options=items_df['id'].tolist(),
                         format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]}"
                     )
-                
-                with col2:
+                    
                     update_type = st.selectbox("Update Type", ["SET", "ADD", "SUBTRACT"])
                     quantity = st.number_input("Quantity", min_value=0.0, value=0.0)
                 
-                with col3:
+                with col2:
                     reference = st.text_input("Reference/Reason", placeholder="Stock count, delivery, etc.")
-                    submitted = st.form_submit_button("🔄 Update Stock", type="primary", use_container_width=True)
+                    batch_nr = st.text_input("Batch Number", placeholder="Optional batch reference")
+                    
+                    col2a, col2b = st.columns(2)
+                    with col2a:
+                        invoice_nr = st.text_input("Invoice #", placeholder="Optional")
+                    with col2b:
+                        po_nr = st.text_input("PO #", placeholder="Optional")
+                
+                submitted = st.form_submit_button("🔄 Update Stock", type="primary", use_container_width=True)
                 
                 if submitted:
                     if selected_item and quantity >= 0:
@@ -979,12 +1026,12 @@ def show_admin_stock_update():
                             c.execute("UPDATE items SET current_stock = ? WHERE id = ? AND branch_id = ?", 
                                      (quantity, selected_item, selected_branch_id))
                             
-                            # Record movement
+                            # Record movement with enhanced tracking
                             movement_type = "ADMIN_SET"
-                            c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, date_time, user_id)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                            c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr, date_time, user_id)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                                       (selected_item, selected_branch_id, movement_type, quantity, 
-                                       f"SET to {quantity} - {reference}", 
+                                       f"SET to {quantity} - {reference}", batch_nr, invoice_nr, po_nr,
                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
                             
                             conn.commit()
@@ -996,7 +1043,7 @@ def show_admin_stock_update():
                         elif update_type == "ADD":
                             if quantity > 0:
                                 update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', 
-                                            f"Admin added {quantity} - {reference}", '', st.session_state.username)
+                                            f"Admin added {quantity} - {reference}", batch_nr, invoice_nr, po_nr, st.session_state.username)
                                 new_stock = current_item['current_stock'] + quantity
                                 st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']} (New total: {new_stock})")
                                 st.rerun()
@@ -1007,7 +1054,7 @@ def show_admin_stock_update():
                             if quantity > 0:
                                 if current_item['current_stock'] >= quantity:
                                     update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', 
-                                                f"Admin subtracted {quantity} - {reference}", '', st.session_state.username)
+                                                f"Admin subtracted {quantity} - {reference}", batch_nr, invoice_nr, po_nr, st.session_state.username)
                                     new_stock = current_item['current_stock'] - quantity
                                     st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']} (New total: {new_stock})")
                                     st.rerun()
@@ -1081,13 +1128,20 @@ def show_admin_stock_transfers():
                         options=available_items['id'].tolist(),
                         format_func=lambda x: f"{available_items[available_items['id']==x]['name'].iloc[0]} ({available_items[available_items['id']==x]['current_stock'].iloc[0]} {available_items[available_items['id']==x]['unit'].iloc[0]})"
                     )
-                
-                with col2:
+                    
                     if selected_item:
                         max_qty = available_items[available_items['id'] == selected_item]['current_stock'].iloc[0]
                         transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=1.0)
                 
-                reference = st.text_input("Transfer Reference", placeholder="Admin transfer - reason for moving stock")
+                with col2:
+                    reference = st.text_input("Transfer Reference", placeholder="Admin transfer - reason for moving stock")
+                    batch_nr = st.text_input("Batch Number", placeholder="Optional batch reference")
+                    
+                    col2a, col2b = st.columns(2)
+                    with col2a:
+                        invoice_nr = st.text_input("Invoice #", placeholder="Optional")
+                    with col2b:
+                        po_nr = st.text_input("PO #", placeholder="Optional")
                 
                 submitted = st.form_submit_button("🔀 Transfer Final Product", type="primary", use_container_width=True)
                 
@@ -1095,12 +1149,18 @@ def show_admin_stock_transfers():
                     if selected_item and transfer_qty > 0:
                         success, message = transfer_stock_between_branches(
                             selected_item, from_branch_id, to_branch_id, transfer_qty, 
-                            f"ADMIN TRANSFER: {reference}", st.session_state.username
+                            f"ADMIN TRANSFER: {reference}", batch_nr, invoice_nr, po_nr, st.session_state.username
                         )
                         
                         if success:
                             item_name = available_items[available_items['id'] == selected_item]['name'].iloc[0]
                             st.success(f"✅ Successfully transferred {transfer_qty} units of {item_name} from {from_branch_name} to {to_branch_name}")
+                            if batch_nr or invoice_nr or po_nr:
+                                tracking_info = []
+                                if batch_nr: tracking_info.append(f"Batch: {batch_nr}")
+                                if invoice_nr: tracking_info.append(f"Invoice: {invoice_nr}")
+                                if po_nr: tracking_info.append(f"PO: {po_nr}")
+                                st.info(f"📋 Tracking: {' | '.join(tracking_info)}")
                             st.rerun()
                         else:
                             st.error(f"❌ Transfer failed: {message}")
@@ -1123,7 +1183,7 @@ def show_admin_stock_transfers():
                 st.info(f"💡 No final products found in **{from_branch_name}**")
 
 def show_admin_stock_movements():
-    """Admin interface for viewing final product stock movements"""
+    """Admin interface for viewing final product stock movements with enhanced tracking"""
     st.header("📈 Final Product Stock Movements")
     
     if not check_permission('admin'):
@@ -1132,117 +1192,163 @@ def show_admin_stock_movements():
     
     branches_df = get_all_branches()
     
-    # Branch filter
-    branch_filter = st.selectbox(
-        "🏪 Filter by Branch",
-        options=["All Branches"] + branches_df['branch_name'].tolist()
-    )
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        branch_filter = st.selectbox(
+            "🏪 Filter by Branch",
+            options=["All Branches"] + branches_df['branch_name'].tolist()
+        )
+    
+    with col2:
+        user_filter = st.selectbox(
+            "👤 Filter by User",
+            options=["All Users", "My Movements", "Manager Movements", "Admin Movements"]
+        )
+    
+    with col3:
+        movement_filter = st.selectbox(
+            "🔄 Movement Type",
+            options=["All Types", "Admin Actions", "Transfers", "Production", "Stock In/Out"]
+        )
     
     # Get movements for final products only
     conn = sqlite3.connect('inventory.db')
     
-    if branch_filter == "All Branches":
-        movements_query = '''
-            SELECT sm.*, i.name as item_name, i.unit, b.branch_name,
-                   b1.branch_name as from_branch_name,
-                   b2.branch_name as to_branch_name
-            FROM stock_movements sm
-            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
-            JOIN branches b ON sm.branch_id = b.id
-            LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
-            LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
-            WHERE i.category = 'Final Product'
-            ORDER BY sm.date_time DESC 
-            LIMIT 100
-        '''
-        movements_df = pd.read_sql_query(movements_query, conn)
-    else:
-        branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
-        movements_query = '''
-            SELECT sm.*, i.name as item_name, i.unit, b.branch_name,
-                   b1.branch_name as from_branch_name,
-                   b2.branch_name as to_branch_name
-            FROM stock_movements sm
-            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
-            JOIN branches b ON sm.branch_id = b.id
-            LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
-            LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
-            WHERE i.category = 'Final Product' AND sm.branch_id = ?
-            ORDER BY sm.date_time DESC 
-            LIMIT 100
-        '''
-        movements_df = pd.read_sql_query(movements_query, conn, params=[branch_id])
+    # Build base query
+    base_query = '''
+        SELECT sm.*, i.name as item_name, i.unit, b.branch_name,
+               b1.branch_name as from_branch_name,
+               b2.branch_name as to_branch_name
+        FROM stock_movements sm
+        JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+        JOIN branches b ON sm.branch_id = b.id
+        LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+        LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+        WHERE i.category = 'Final Product'
+    '''
     
+    # Add filters
+    params = []
+    
+    if branch_filter != "All Branches":
+        branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
+        base_query += " AND sm.branch_id = ?"
+        params.append(branch_id)
+    
+    if user_filter == "My Movements":
+        base_query += " AND sm.user_id = ?"
+        params.append(st.session_state.username)
+    elif user_filter == "Manager Movements":
+        base_query += " AND sm.user_id LIKE '%manager%'"
+    elif user_filter == "Admin Movements":
+        base_query += " AND sm.user_id = 'admin'"
+    
+    if movement_filter == "Admin Actions":
+        base_query += " AND sm.movement_type LIKE 'ADMIN_%'"
+    elif movement_filter == "Transfers":
+        base_query += " AND sm.movement_type LIKE 'TRANSFER_%'"
+    elif movement_filter == "Production":
+        base_query += " AND sm.movement_type = 'PRODUCTION'"
+    elif movement_filter == "Stock In/Out":
+        base_query += " AND sm.movement_type IN ('IN', 'OUT')"
+    
+    base_query += " ORDER BY sm.date_time DESC LIMIT 100"
+    
+    movements_df = pd.read_sql_query(base_query, conn, params=params)
     conn.close()
     
     if not movements_df.empty:
-        st.info(f"📊 Showing {len(movements_df)} recent final product movements")
+        st.info(f"📊 Showing {len(movements_df)} movements (filtered)")
         
-        # Movement type filter
-        movement_types = ["All Types"] + movements_df['movement_type'].unique().tolist()
-        movement_filter = st.selectbox("🔄 Filter by Movement Type", movement_types)
+        # Process and display movements with enhanced information
+        display_data = []
         
-        filtered_movements = movements_df.copy()
-        if movement_filter != "All Types":
-            filtered_movements = filtered_movements[filtered_movements['movement_type'] == movement_filter]
-        
-        if not filtered_movements.empty:
-            # Process and display movements
-            display_data = []
+        for _, row in movements_df.iterrows():
+            # Format movement type and details
+            movement_info = row['movement_type']
+            direction = ""
             
-            for _, row in filtered_movements.iterrows():
-                # Format movement type and details
-                movement_info = row['movement_type']
-                direction = ""
-                
-                if row['movement_type'] in ['TRANSFER_OUT', 'TRANSFER_IN']:
-                    if row['movement_type'] == 'TRANSFER_OUT':
-                        direction = f"→ {row['to_branch_name']}" if row['to_branch_name'] else ""
-                    else:
-                        direction = f"← {row['from_branch_name']}" if row['from_branch_name'] else ""
-                    movement_info = f"Transfer {direction}"
-                elif row['movement_type'] in ['ADMIN_IN', 'ADMIN_OUT', 'ADMIN_SET']:
-                    movement_info = f"Admin {row['movement_type'].split('_')[1]}"
-                elif row['movement_type'] == 'IN':
-                    movement_info = "Stock In"
-                elif row['movement_type'] == 'OUT':
-                    movement_info = "Stock Out"
-                elif row['movement_type'] == 'PRODUCTION':
-                    movement_info = "Production"
-                
-                display_data.append({
-                    'Date': row['date_time'][:16],
-                    'Branch': row['branch_name'],
-                    'Product': row['item_name'],
-                    'Movement': movement_info,
-                    'Quantity': f"{row['quantity']} {row['unit']}",
-                    'Reference': row['reference'] or '-',
-                    'User': row['user_id']
-                })
+            if row['movement_type'] in ['TRANSFER_OUT', 'TRANSFER_IN']:
+                if row['movement_type'] == 'TRANSFER_OUT':
+                    direction = f"→ {row['to_branch_name']}" if row['to_branch_name'] else ""
+                else:
+                    direction = f"← {row['from_branch_name']}" if row['from_branch_name'] else ""
+                movement_info = f"Transfer {direction}"
+            elif row['movement_type'] in ['ADMIN_IN', 'ADMIN_OUT', 'ADMIN_SET']:
+                movement_info = f"Admin {row['movement_type'].split('_')[1]}"
+            elif row['movement_type'] == 'IN':
+                movement_info = "Stock In"
+            elif row['movement_type'] == 'OUT':
+                movement_info = "Stock Out"
+            elif row['movement_type'] == 'PRODUCTION':
+                movement_info = "Production"
             
-            if display_data:
-                movements_display_df = pd.DataFrame(display_data)
-                st.dataframe(movements_display_df, use_container_width=True, height=400)
+            # Build tracking info
+            tracking_parts = []
+            if row.get('batch_nr'):
+                tracking_parts.append(f"Batch: {row['batch_nr']}")
+            if row.get('invoice_nr'):
+                tracking_parts.append(f"Inv: {row['invoice_nr']}")
+            if row.get('po_nr'):
+                tracking_parts.append(f"PO: {row['po_nr']}")
+            
+            tracking_info = " | ".join(tracking_parts) if tracking_parts else "-"
+            
+            # User color coding
+            user_display = row['user_id']
+            if 'admin' in row['user_id'].lower():
+                user_display = f"🔧 {row['user_id']}"
+            elif 'manager' in row['user_id'].lower():
+                user_display = f"👨‍💼 {row['user_id']}"
+            
+            display_data.append({
+                'Date': row['date_time'][:16],
+                'Branch': row['branch_name'],
+                'Product': row['item_name'],
+                'Movement': movement_info,
+                'Quantity': f"{row['quantity']} {row['unit']}",
+                'Reference': row['reference'][:30] + "..." if row['reference'] and len(row['reference']) > 30 else (row['reference'] or '-'),
+                'Tracking': tracking_info,
+                'User': user_display
+            })
+        
+        if display_data:
+            movements_display_df = pd.DataFrame(display_data)
+            st.dataframe(movements_display_df, use_container_width=True, height=400)
+            
+            # Summary statistics
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                total_movements = len(movements_df)
+                st.metric("Total Movements", total_movements)
+            
+            with col2:
+                admin_actions = len(movements_df[movements_df['movement_type'].str.contains('ADMIN')])
+                st.metric("Admin Actions", admin_actions)
+            
+            with col3:
+                transfers = len(movements_df[movements_df['movement_type'].str.contains('TRANSFER')])
+                st.metric("Transfers", transfers)
+            
+            with col4:
+                unique_products = movements_df['item_name'].nunique()
+                st.metric("Products Affected", unique_products)
+            
+            # Show recent admin vs manager activity
+            if not movements_df.empty:
+                st.subheader("👥 Recent Activity by User Type")
+                admin_count = len(movements_df[movements_df['user_id'].str.contains('admin', case=False)])
+                manager_count = len(movements_df[movements_df['user_id'].str.contains('manager', case=False)])
                 
-                # Summary statistics
-                st.markdown("---")
-                col1, col2, col3, col4 = st.columns(4)
-                
+                col1, col2 = st.columns(2)
                 with col1:
-                    total_movements = len(filtered_movements)
-                    st.metric("Total Movements", total_movements)
-                
+                    st.metric("🔧 Admin Actions", admin_count)
                 with col2:
-                    transfers = len(filtered_movements[filtered_movements['movement_type'].str.contains('TRANSFER')])
-                    st.metric("Transfers", transfers)
-                
-                with col3:
-                    admin_actions = len(filtered_movements[filtered_movements['movement_type'].str.contains('ADMIN')])
-                    st.metric("Admin Actions", admin_actions)
-                
-                with col4:
-                    unique_products = filtered_movements['item_name'].nunique()
-                    st.metric("Products Affected", unique_products)
+                    st.metric("👨‍💼 Manager Actions", manager_count)
         else:
             st.info("No movements found with the selected filters.")
     else:
@@ -1253,6 +1359,12 @@ def show_admin_stock_movements():
         - ✅ Products are transferred between branches  
         - ✅ Final products are produced
         - ✅ Stock adjustments are made
+        
+        **Enhanced Tracking includes:**
+        - 📋 Batch numbers
+        - 🧾 Invoice numbers  
+        - 📝 PO numbers
+        - 👤 User identification
         """)
     """Admin view of all branches and their final products"""
     st.header("🏪 All Branches - Final Products")
@@ -1282,8 +1394,85 @@ def show_admin_stock_movements():
                     with col2:
                         out_of_stock = len(branch_items[branch_items['current_stock'] <= 0])
                         st.metric("Out of Stock", out_of_stock)
+def show_admin_branch_view():
+    """Admin view of all branches and their final products with quantities"""
+    st.header("🏪 All Branches - Final Products Stock")
+    
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    items_df = get_all_items("admin")
+    
+    if not branches_df.empty:
+        # Summary overview first
+        st.subheader("📊 Quick Overview")
+        
+        summary_data = []
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            if not branch_items.empty:
+                total_stock = branch_items['current_stock'].sum()
+                in_stock_items = len(branch_items[branch_items['current_stock'] > 0])
+                out_of_stock = len(branch_items[branch_items['current_stock'] <= 0])
+                
+                summary_data.append({
+                    'Branch': branch['branch_name'],
+                    'Location': branch['location'],
+                    'Products': len(branch_items),
+                    'In Stock': in_stock_items,
+                    'Out of Stock': out_of_stock,
+                    'Total Units': total_stock
+                })
+        
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True)
+        
+        # Detailed branch breakdown
+        st.subheader("📦 Detailed Stock by Branch")
+        
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            
+            with st.expander(f"🏪 {branch['branch_name']} - {branch['location']} ({len(branch_items)} products)", expanded=False):
+                if not branch_items.empty:
+                    # Add status indicators
+                    def get_status_icon(row):
+                        if row['current_stock'] <= 0:
+                            return "❌"
+                        elif row['current_stock'] <= row['min_stock']:
+                            return "⚠️"
+                        else:
+                            return "✅"
+                    
+                    branch_items = branch_items.copy()
+                    branch_items['Status'] = branch_items.apply(get_status_icon, axis=1)
+                    
+                    display_df = branch_items[['Status', 'name', 'current_stock', 'min_stock', 'unit']].copy()
+                    display_df.columns = ['Status', 'Product', 'Current Stock', 'Min Stock', 'Unit']
+                    
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # Branch stats
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        total_items = len(branch_items)
+                        st.metric("Total Products", total_items)
+                    with col2:
+                        in_stock = len(branch_items[branch_items['current_stock'] > 0])
+                        st.metric("In Stock", in_stock)
+                    with col3:
+                        out_of_stock = len(branch_items[branch_items['current_stock'] <= 0])
+                        st.metric("Out of Stock", out_of_stock)
                 else:
                     st.info("No final products in this branch")
+                    st.markdown("💡 **How to add products:**")
+                    st.markdown("- Transfer from another branch")
+                    st.markdown("- Ask warehouse manager to add items")
+    else:
+        st.error("No branches found in the system.")
 
 # ENHANCED MANAGEMENT PAGES
 def show_management_dashboard():
@@ -1759,16 +1948,23 @@ def show_stock_management():
                                                options=items_df['id'].tolist(),
                                                format_func=lambda x: f"{x} - {items_df[items_df['id']==x]['name'].iloc[0]}")
                     adjustment_qty = st.number_input("Quantity", value=0.0)
+                    movement_type = st.selectbox("Type", ["IN", "OUT"])
                 
                 with col2:
-                    movement_type = st.selectbox("Type", ["IN", "OUT"])
                     reference = st.text_input("Reference", placeholder="Reason")
+                    batch_nr = st.text_input("Batch #", placeholder="Optional")
+                    
+                    col2a, col2b = st.columns(2)
+                    with col2a:
+                        invoice_nr = st.text_input("Invoice #", placeholder="Optional")
+                    with col2b:
+                        po_nr = st.text_input("PO #", placeholder="Optional")
                 
                 submitted = st.form_submit_button("💾 Update Stock", type="primary", use_container_width=True)
                 
                 if submitted:
                     if selected_item and adjustment_qty != 0:
-                        update_stock(selected_item, selected_branch_id, abs(adjustment_qty), movement_type, reference, "", st.session_state.username)
+                        update_stock(selected_item, selected_branch_id, abs(adjustment_qty), movement_type, reference, batch_nr, invoice_nr, po_nr, st.session_state.username)
                         st.success("✅ Stock updated!")
                         st.rerun()
                     else:
@@ -1831,13 +2027,20 @@ def show_stock_transfers():
                             options=available_items['id'].tolist(),
                             format_func=lambda x: f"{available_items[available_items['id']==x]['name'].iloc[0]} ({available_items[available_items['id']==x]['current_stock'].iloc[0]} {available_items[available_items['id']==x]['unit'].iloc[0]})"
                         )
-                    
-                    with col2:
+                        
                         if selected_item:
                             max_qty = available_items[available_items['id'] == selected_item]['current_stock'].iloc[0]
                             transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=1.0)
                     
-                    reference = st.text_input("Transfer Reference", placeholder="Reason for transfer")
+                    with col2:
+                        reference = st.text_input("Transfer Reference", placeholder="Reason for transfer")
+                        batch_nr = st.text_input("Batch Number", placeholder="Optional batch reference")
+                        
+                        col2a, col2b = st.columns(2)
+                        with col2a:
+                            invoice_nr = st.text_input("Invoice #", placeholder="Optional")
+                        with col2b:
+                            po_nr = st.text_input("PO #", placeholder="Optional")
                     
                     # Submit button
                     submitted = st.form_submit_button("🔄 Transfer Stock", type="primary", use_container_width=True)
@@ -1845,7 +2048,7 @@ def show_stock_transfers():
                     if submitted:
                         if selected_item and transfer_qty > 0:
                             success, message = transfer_stock_between_branches(
-                                selected_item, from_branch_id, to_branch_id, transfer_qty, reference, st.session_state.username
+                                selected_item, from_branch_id, to_branch_id, transfer_qty, reference, batch_nr, invoice_nr, po_nr, st.session_state.username
                             )
                             
                             if success:
@@ -1896,9 +2099,23 @@ def show_stock_transfers():
             out_transfers = transfers_df[transfers_df['movement_type'] == 'TRANSFER_OUT']
             
             if not out_transfers.empty:
+                # Build tracking info
+                def build_tracking_info(row):
+                    tracking_parts = []
+                    if row.get('batch_nr'):
+                        tracking_parts.append(f"Batch: {row['batch_nr']}")
+                    if row.get('invoice_nr'):
+                        tracking_parts.append(f"Inv: {row['invoice_nr']}")
+                    if row.get('po_nr'):
+                        tracking_parts.append(f"PO: {row['po_nr']}")
+                    return " | ".join(tracking_parts) if tracking_parts else "-"
+                
+                out_transfers = out_transfers.copy()
+                out_transfers['tracking'] = out_transfers.apply(build_tracking_info, axis=1)
+                
                 display_transfers = out_transfers[['date_time', 'item_name', 'quantity', 'unit', 
-                                                 'from_branch_name', 'to_branch_name', 'reference', 'user_id']]
-                display_transfers.columns = ['Date', 'Item', 'Qty', 'Unit', 'From', 'To', 'Reference', 'User']
+                                                 'from_branch_name', 'to_branch_name', 'tracking', 'reference', 'user_id']]
+                display_transfers.columns = ['Date', 'Item', 'Qty', 'Unit', 'From', 'To', 'Tracking', 'Reference', 'User']
                 display_transfers['Date'] = pd.to_datetime(display_transfers['Date']).dt.strftime('%m-%d %H:%M')
                 
                 st.dataframe(display_transfers, use_container_width=True, height=400)
@@ -1948,7 +2165,7 @@ def show_production_center():
                 if selected_product and quantity_to_produce > 0:
                     # For now, just add to final product stock (BOM functionality would need to be updated for branches)
                     update_stock(selected_product, selected_branch_id, quantity_to_produce, 'PRODUCTION', 
-                               f'Produced {quantity_to_produce} units', '', st.session_state.username)
+                               f'Produced {quantity_to_produce} units', '', '', '', st.session_state.username)
                     st.success(f"✅ Produced {quantity_to_produce} units!")
                     st.rerun()
         
@@ -2126,8 +2343,21 @@ def show_reports():
         if not movements_df.empty:
             movements_df['date_time'] = pd.to_datetime(movements_df['date_time']).dt.strftime('%m-%d %H:%M')
             
-            display_df = movements_df[['date_time', 'branch_name', 'item_name', 'movement_type', 'quantity', 'unit', 'user_id']]
-            display_df.columns = ['Date', 'Branch', 'Item', 'Type', 'Qty', 'Unit', 'User']
+            # Build tracking info
+            def build_tracking_info(row):
+                tracking_parts = []
+                if row.get('batch_nr'):
+                    tracking_parts.append(f"Batch: {row['batch_nr']}")
+                if row.get('invoice_nr'):
+                    tracking_parts.append(f"Inv: {row['invoice_nr']}")
+                if row.get('po_nr'):
+                    tracking_parts.append(f"PO: {row['po_nr']}")
+                return " | ".join(tracking_parts) if tracking_parts else "-"
+            
+            movements_df['tracking'] = movements_df.apply(build_tracking_info, axis=1)
+            
+            display_df = movements_df[['date_time', 'branch_name', 'item_name', 'movement_type', 'quantity', 'unit', 'tracking', 'user_id']]
+            display_df.columns = ['Date', 'Branch', 'Item', 'Type', 'Qty', 'Unit', 'Tracking', 'User']
             
             st.dataframe(display_df, use_container_width=True, height=400)
         else:
