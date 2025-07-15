@@ -314,7 +314,7 @@ def get_all_items(user_role=None, branch_id=None):
     return df
 
 def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quantity, reference="", user_id="system"):
-    """Transfer stock between branches"""
+    """Transfer stock between branches - available to warehouse managers and admins"""
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
     
@@ -495,7 +495,7 @@ def show_login():
     - **Warehouse Manager**: `warehouse_manager` / `manager123`
     - **Boss/Owner**: `boss` / `boss123`  
     - **Branch Viewer**: `viewer` / `viewer123`
-    - **Stock Admin**: `admin` / `admin123`
+    - **Stock Admin**: `admin` / `admin123` *(Can update & transfer final products)*
     """)
 
 # Mobile-friendly navigation
@@ -512,6 +512,8 @@ def show_mobile_navigation(user_role):
         menu_items = [
             ("📊", "Dashboard", "admin_dashboard"),
             ("🔄", "Update Stock", "admin_stock_update"),
+            ("🔀", "Transfers", "admin_stock_transfers"),
+            ("📈", "Movements", "admin_stock_movements"),
             ("🏪", "All Branches", "admin_branch_view")
         ]
     elif user_role == "boss":
@@ -728,6 +730,10 @@ def main():
         show_admin_dashboard()
     elif current_page == "admin_stock_update":
         show_admin_stock_update()
+    elif current_page == "admin_stock_transfers":
+        show_admin_stock_transfers()
+    elif current_page == "admin_stock_movements":
+        show_admin_stock_movements()
     elif current_page == "admin_branch_view":
         show_admin_branch_view()
     elif current_page == "management_dashboard":
@@ -977,7 +983,8 @@ def show_admin_stock_update():
                             movement_type = "ADMIN_SET"
                             c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, date_time, user_id)
                                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                                      (selected_item, selected_branch_id, movement_type, quantity, reference, 
+                                      (selected_item, selected_branch_id, movement_type, quantity, 
+                                       f"SET to {quantity} - {reference}", 
                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
                             
                             conn.commit()
@@ -987,19 +994,29 @@ def show_admin_stock_update():
                             st.rerun()
                         
                         elif update_type == "ADD":
-                            update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', reference, '', st.session_state.username)
-                            st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']}")
-                            st.rerun()
-                        
-                        elif update_type == "SUBTRACT":
-                            if current_item['current_stock'] >= quantity:
-                                update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', reference, '', st.session_state.username)
-                                st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']}")
+                            if quantity > 0:
+                                update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', 
+                                            f"Admin added {quantity} - {reference}", '', st.session_state.username)
+                                new_stock = current_item['current_stock'] + quantity
+                                st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']} (New total: {new_stock})")
                                 st.rerun()
                             else:
-                                st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available.")
+                                st.error("❌ Quantity must be greater than 0 for ADD operation")
+                        
+                        elif update_type == "SUBTRACT":
+                            if quantity > 0:
+                                if current_item['current_stock'] >= quantity:
+                                    update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', 
+                                                f"Admin subtracted {quantity} - {reference}", '', st.session_state.username)
+                                    new_stock = current_item['current_stock'] - quantity
+                                    st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']} (New total: {new_stock})")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available.")
+                            else:
+                                st.error("❌ Quantity must be greater than 0 for SUBTRACT operation")
                     else:
-                        st.error("❌ Please enter a valid quantity")
+                        st.error("❌ Please enter a valid quantity (0 or greater)")
         else:
             st.warning(f"⚠️ No final products found in **{branch_info['branch_name']}**")
             st.info("💡 To add final products to this branch:")
@@ -1009,7 +1026,234 @@ def show_admin_stock_update():
             3. **Produce items** using the Production Center
             """)
 
-def show_admin_branch_view():
+def show_admin_stock_transfers():
+    """Admin interface for transferring final product stock between branches"""
+    st.header("🔀 Transfer Final Products Between Branches")
+    
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    
+    if len(branches_df) < 2:
+        st.warning("⚠️ Need at least 2 branches to perform transfers.")
+        return
+    
+    st.info("🔧 **Admin Transfer**: You can transfer final products between branches")
+    
+    # Branch selection
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        from_branch_id = st.selectbox(
+            "📤 From Branch",
+            options=branches_df['id'].tolist(),
+            format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+        )
+    
+    with col2:
+        to_branch_options = [bid for bid in branches_df['id'].tolist() if bid != from_branch_id]
+        to_branch_id = st.selectbox(
+            "📥 To Branch",
+            options=to_branch_options,
+            format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+        ) if to_branch_options else None
+    
+    if from_branch_id and to_branch_id:
+        # Get final products from source branch
+        from_items_df = get_all_items("admin", from_branch_id)
+        available_items = from_items_df[from_items_df['current_stock'] > 0]
+        
+        if not available_items.empty:
+            from_branch_name = branches_df[branches_df['id'] == from_branch_id]['branch_name'].iloc[0]
+            to_branch_name = branches_df[branches_df['id'] == to_branch_id]['branch_name'].iloc[0]
+            
+            st.success(f"📦 Available final products in **{from_branch_name}**: {len(available_items)} items")
+            
+            # Transfer form
+            with st.form("admin_transfer_form"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    selected_item = st.selectbox(
+                        "📦 Final Product to Transfer",
+                        options=available_items['id'].tolist(),
+                        format_func=lambda x: f"{available_items[available_items['id']==x]['name'].iloc[0]} ({available_items[available_items['id']==x]['current_stock'].iloc[0]} {available_items[available_items['id']==x]['unit'].iloc[0]})"
+                    )
+                
+                with col2:
+                    if selected_item:
+                        max_qty = available_items[available_items['id'] == selected_item]['current_stock'].iloc[0]
+                        transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=1.0)
+                
+                reference = st.text_input("Transfer Reference", placeholder="Admin transfer - reason for moving stock")
+                
+                submitted = st.form_submit_button("🔀 Transfer Final Product", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if selected_item and transfer_qty > 0:
+                        success, message = transfer_stock_between_branches(
+                            selected_item, from_branch_id, to_branch_id, transfer_qty, 
+                            f"ADMIN TRANSFER: {reference}", st.session_state.username
+                        )
+                        
+                        if success:
+                            item_name = available_items[available_items['id'] == selected_item]['name'].iloc[0]
+                            st.success(f"✅ Successfully transferred {transfer_qty} units of {item_name} from {from_branch_name} to {to_branch_name}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Transfer failed: {message}")
+                    else:
+                        st.error("❌ Please select an item and enter a quantity greater than 0")
+        
+        else:
+            from_branch_name = branches_df[branches_df['id'] == from_branch_id]['branch_name'].iloc[0]
+            st.warning(f"⚠️ No final products with stock available in **{from_branch_name}**")
+            
+            # Show what final products exist but have no stock
+            all_final_products = get_all_items("admin", from_branch_id)
+            if not all_final_products.empty:
+                zero_stock_items = all_final_products[all_final_products['current_stock'] <= 0]
+                if not zero_stock_items.empty:
+                    st.info(f"💡 Final products in this branch with zero stock:")
+                    for _, item in zero_stock_items.iterrows():
+                        st.write(f"- {item['name']}: {item['current_stock']} {item['unit']}")
+            else:
+                st.info(f"💡 No final products found in **{from_branch_name}**")
+
+def show_admin_stock_movements():
+    """Admin interface for viewing final product stock movements"""
+    st.header("📈 Final Product Stock Movements")
+    
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    
+    # Branch filter
+    branch_filter = st.selectbox(
+        "🏪 Filter by Branch",
+        options=["All Branches"] + branches_df['branch_name'].tolist()
+    )
+    
+    # Get movements for final products only
+    conn = sqlite3.connect('inventory.db')
+    
+    if branch_filter == "All Branches":
+        movements_query = '''
+            SELECT sm.*, i.name as item_name, i.unit, b.branch_name,
+                   b1.branch_name as from_branch_name,
+                   b2.branch_name as to_branch_name
+            FROM stock_movements sm
+            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+            JOIN branches b ON sm.branch_id = b.id
+            LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+            LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+            WHERE i.category = 'Final Product'
+            ORDER BY sm.date_time DESC 
+            LIMIT 100
+        '''
+        movements_df = pd.read_sql_query(movements_query, conn)
+    else:
+        branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
+        movements_query = '''
+            SELECT sm.*, i.name as item_name, i.unit, b.branch_name,
+                   b1.branch_name as from_branch_name,
+                   b2.branch_name as to_branch_name
+            FROM stock_movements sm
+            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+            JOIN branches b ON sm.branch_id = b.id
+            LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+            LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+            WHERE i.category = 'Final Product' AND sm.branch_id = ?
+            ORDER BY sm.date_time DESC 
+            LIMIT 100
+        '''
+        movements_df = pd.read_sql_query(movements_query, conn, params=[branch_id])
+    
+    conn.close()
+    
+    if not movements_df.empty:
+        st.info(f"📊 Showing {len(movements_df)} recent final product movements")
+        
+        # Movement type filter
+        movement_types = ["All Types"] + movements_df['movement_type'].unique().tolist()
+        movement_filter = st.selectbox("🔄 Filter by Movement Type", movement_types)
+        
+        filtered_movements = movements_df.copy()
+        if movement_filter != "All Types":
+            filtered_movements = filtered_movements[filtered_movements['movement_type'] == movement_filter]
+        
+        if not filtered_movements.empty:
+            # Process and display movements
+            display_data = []
+            
+            for _, row in filtered_movements.iterrows():
+                # Format movement type and details
+                movement_info = row['movement_type']
+                direction = ""
+                
+                if row['movement_type'] in ['TRANSFER_OUT', 'TRANSFER_IN']:
+                    if row['movement_type'] == 'TRANSFER_OUT':
+                        direction = f"→ {row['to_branch_name']}" if row['to_branch_name'] else ""
+                    else:
+                        direction = f"← {row['from_branch_name']}" if row['from_branch_name'] else ""
+                    movement_info = f"Transfer {direction}"
+                elif row['movement_type'] in ['ADMIN_IN', 'ADMIN_OUT', 'ADMIN_SET']:
+                    movement_info = f"Admin {row['movement_type'].split('_')[1]}"
+                elif row['movement_type'] == 'IN':
+                    movement_info = "Stock In"
+                elif row['movement_type'] == 'OUT':
+                    movement_info = "Stock Out"
+                elif row['movement_type'] == 'PRODUCTION':
+                    movement_info = "Production"
+                
+                display_data.append({
+                    'Date': row['date_time'][:16],
+                    'Branch': row['branch_name'],
+                    'Product': row['item_name'],
+                    'Movement': movement_info,
+                    'Quantity': f"{row['quantity']} {row['unit']}",
+                    'Reference': row['reference'] or '-',
+                    'User': row['user_id']
+                })
+            
+            if display_data:
+                movements_display_df = pd.DataFrame(display_data)
+                st.dataframe(movements_display_df, use_container_width=True, height=400)
+                
+                # Summary statistics
+                st.markdown("---")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    total_movements = len(filtered_movements)
+                    st.metric("Total Movements", total_movements)
+                
+                with col2:
+                    transfers = len(filtered_movements[filtered_movements['movement_type'].str.contains('TRANSFER')])
+                    st.metric("Transfers", transfers)
+                
+                with col3:
+                    admin_actions = len(filtered_movements[filtered_movements['movement_type'].str.contains('ADMIN')])
+                    st.metric("Admin Actions", admin_actions)
+                
+                with col4:
+                    unique_products = filtered_movements['item_name'].nunique()
+                    st.metric("Products Affected", unique_products)
+        else:
+            st.info("No movements found with the selected filters.")
+    else:
+        st.info("📊 No final product movements found.")
+        st.markdown("""
+        **Movements will appear here when:**
+        - ✅ Stock is updated by admins
+        - ✅ Products are transferred between branches  
+        - ✅ Final products are produced
+        - ✅ Stock adjustments are made
+        """)
     """Admin view of all branches and their final products"""
     st.header("🏪 All Branches - Final Products")
     
@@ -1939,7 +2183,7 @@ def show_user_management():
                 
                 role_info = {
                     "viewer": "👁️ **Viewer**: Can only see final products by branch (no quantities).",
-                    "admin": "🔧 **Admin**: Can update final product stock levels only.",
+                    "admin": "🔧 **Admin**: Can update final product stock levels AND transfer between branches.",
                     "boss": "👔 **Boss**: Can view all inventory across branches (read-only).",
                     "warehouse_manager": "👨‍💼 **Manager**: Full access including branch management."
                 }
