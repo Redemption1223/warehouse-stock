@@ -352,20 +352,39 @@ def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quant
         c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ? AND branch_id = ?", 
                  (quantity, item_id, to_branch_id))
         
-        # Record movements with enhanced tracking
+        # Record movements with enhanced tracking - check if new columns exist first
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Out movement from source branch
-        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
-                     invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
-                     VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (item_id, from_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
+        # Check if the new columns exist
+        try:
+            c.execute("SELECT invoice_nr FROM stock_movements LIMIT 1")
+            has_new_columns = True
+        except sqlite3.OperationalError:
+            has_new_columns = False
         
-        # In movement to destination branch
-        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
-                     invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
-                     VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (item_id, to_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
+        if has_new_columns:
+            # Out movement from source branch
+            c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                         invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
+                         VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (item_id, from_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
+            
+            # In movement to destination branch
+            c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                         invoice_nr, po_nr, date_time, user_id, from_branch_id, to_branch_id)
+                         VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (item_id, to_branch_id, quantity, reference, batch_nr, invoice_nr, po_nr, timestamp, user_id, from_branch_id, to_branch_id))
+        else:
+            # Fall back to old format
+            c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                         date_time, user_id, from_branch_id, to_branch_id)
+                         VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?, ?)""",
+                     (item_id, from_branch_id, quantity, reference, batch_nr, timestamp, user_id, from_branch_id, to_branch_id))
+            
+            c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+                         date_time, user_id, from_branch_id, to_branch_id)
+                         VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?, ?)""",
+                     (item_id, to_branch_id, quantity, reference, batch_nr, timestamp, user_id, from_branch_id, to_branch_id))
         
         conn.commit()
         conn.close()
@@ -388,11 +407,24 @@ def update_stock(item_id, branch_id, quantity, movement_type, reference="", batc
         c.execute("UPDATE items SET current_stock = current_stock - ? WHERE id = ? AND branch_id = ?", 
                  (quantity, item_id, branch_id))
     
-    # Record movement with enhanced tracking
-    c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr, date_time, user_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr,
-               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    # Record movement with enhanced tracking - check if new columns exist first
+    try:
+        c.execute("SELECT invoice_nr FROM stock_movements LIMIT 1")
+        has_new_columns = True
+    except sqlite3.OperationalError:
+        has_new_columns = False
+    
+    if has_new_columns:
+        c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr, date_time, user_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, po_nr,
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    else:
+        # Fall back to old format
+        c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, date_time, user_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (item_id, branch_id, movement_type, quantity, reference, batch_nr,
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
     
     conn.commit()
     conn.close()
@@ -522,6 +554,7 @@ def show_mobile_navigation(user_role):
             ("🏪", "Branches", "branch_overview"),
             ("📦", "Stock View", "complete_stock_view"),
             ("📈", "Transfers", "branch_transfers"),
+            ("🔄", "Movements", "boss_stock_movements"),
             ("📋", "Reports", "management_reports")
         ]
     else:  # warehouse_manager
@@ -530,6 +563,7 @@ def show_mobile_navigation(user_role):
             ("🏪", "Branches", "branch_management"),
             ("📦", "Stock", "stock_management"),
             ("🔄", "Transfers", "stock_transfers"),
+            ("📈", "Movements", "manager_stock_movements"),
             ("🏭", "Production", "production_center"),
             ("⚙️", "Items", "item_management"),
             ("📋", "Reports", "reports"),
@@ -744,6 +778,8 @@ def main():
         show_complete_stock_view()
     elif current_page == "branch_transfers":
         show_branch_transfers()
+    elif current_page == "boss_stock_movements":
+        show_boss_stock_movements()
     elif current_page == "management_reports":
         show_management_reports()
     elif current_page == "dashboard":
@@ -754,6 +790,8 @@ def main():
         show_stock_management()
     elif current_page == "stock_transfers":
         show_stock_transfers()
+    elif current_page == "manager_stock_movements":
+        show_manager_stock_movements()
     elif current_page == "production_center":
         show_production_center()
     elif current_page == "item_management":
@@ -2363,7 +2401,240 @@ def show_reports():
         else:
             st.info("No movements found.")
 
-def show_user_management():
+def show_manager_stock_movements():
+    """Manager interface for viewing all stock movements with enhanced tracking"""
+    st.header("📈 Stock Movement History")
+    
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        branch_filter = st.selectbox(
+            "🏪 Filter by Branch",
+            options=["All Branches"] + branches_df['branch_name'].tolist()
+        )
+    
+    with col2:
+        category_filter = st.selectbox(
+            "📦 Filter by Category",
+            options=["All Categories", "Final Product", "Raw Material", "Pre-Final"]
+        )
+    
+    with col3:
+        user_filter = st.selectbox(
+            "👤 Filter by User",
+            options=["All Users", "My Movements", "Admin Movements", "Manager Movements"]
+        )
+    
+    # Additional filters
+    col4, col5 = st.columns(2)
+    
+    with col4:
+        movement_filter = st.selectbox(
+            "🔄 Movement Type",
+            options=["All Types", "Admin Actions", "Transfers", "Production", "Stock In/Out", "Manager Actions"]
+        )
+    
+    with col5:
+        limit_records = st.selectbox(
+            "📊 Show Records",
+            options=[50, 100, 200, 500],
+            index=1
+        )
+    
+    # Get movements for all items
+    conn = sqlite3.connect('inventory.db')
+    
+    # Build base query
+    base_query = '''
+        SELECT sm.*, i.name as item_name, i.unit, i.category, b.branch_name,
+               b1.branch_name as from_branch_name,
+               b2.branch_name as to_branch_name
+        FROM stock_movements sm
+        JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+        JOIN branches b ON sm.branch_id = b.id
+        LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+        LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+        WHERE 1=1
+    '''
+    
+    # Add filters
+    params = []
+    
+    if branch_filter != "All Branches":
+        branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
+        base_query += " AND sm.branch_id = ?"
+        params.append(branch_id)
+    
+    if category_filter != "All Categories":
+        base_query += " AND i.category = ?"
+        params.append(category_filter)
+    
+    if user_filter == "My Movements":
+        base_query += " AND sm.user_id = ?"
+        params.append(st.session_state.username)
+    elif user_filter == "Admin Movements":
+        base_query += " AND sm.user_id = 'admin'"
+    elif user_filter == "Manager Movements":
+        base_query += " AND sm.user_id LIKE '%manager%'"
+    
+    if movement_filter == "Admin Actions":
+        base_query += " AND sm.movement_type LIKE 'ADMIN_%'"
+    elif movement_filter == "Transfers":
+        base_query += " AND sm.movement_type LIKE 'TRANSFER_%'"
+    elif movement_filter == "Production":
+        base_query += " AND sm.movement_type = 'PRODUCTION'"
+    elif movement_filter == "Stock In/Out":
+        base_query += " AND sm.movement_type IN ('IN', 'OUT')"
+    elif movement_filter == "Manager Actions":
+        base_query += " AND (sm.movement_type IN ('IN', 'OUT', 'PRODUCTION') OR sm.user_id LIKE '%manager%')"
+    
+    base_query += f" ORDER BY sm.date_time DESC LIMIT {limit_records}"
+    
+    movements_df = pd.read_sql_query(base_query, conn, params=params)
+    conn.close()
+    
+    if not movements_df.empty:
+        st.info(f"📊 Showing {len(movements_df)} movements (filtered)")
+        
+        # Process and display movements with enhanced information
+        display_data = []
+        
+        for _, row in movements_df.iterrows():
+            # Format movement type and details
+            movement_info = row['movement_type']
+            direction = ""
+            
+            if row['movement_type'] in ['TRANSFER_OUT', 'TRANSFER_IN']:
+                if row['movement_type'] == 'TRANSFER_OUT':
+                    direction = f"→ {row['to_branch_name']}" if row['to_branch_name'] else ""
+                else:
+                    direction = f"← {row['from_branch_name']}" if row['from_branch_name'] else ""
+                movement_info = f"Transfer {direction}"
+            elif row['movement_type'] in ['ADMIN_IN', 'ADMIN_OUT', 'ADMIN_SET']:
+                movement_info = f"Admin {row['movement_type'].split('_')[1]}"
+            elif row['movement_type'] == 'IN':
+                movement_info = "Stock In"
+            elif row['movement_type'] == 'OUT':
+                movement_info = "Stock Out"
+            elif row['movement_type'] == 'PRODUCTION':
+                movement_info = "Production"
+            
+            # Build tracking info
+            tracking_parts = []
+            if row.get('batch_nr'):
+                tracking_parts.append(f"Batch: {row['batch_nr']}")
+            if row.get('invoice_nr'):
+                tracking_parts.append(f"Inv: {row['invoice_nr']}")
+            if row.get('po_nr'):
+                tracking_parts.append(f"PO: {row['po_nr']}")
+            
+            tracking_info = " | ".join(tracking_parts) if tracking_parts else "-"
+            
+            # User color coding
+            user_display = row['user_id']
+            if 'admin' in row['user_id'].lower():
+                user_display = f"🔧 {row['user_id']}"
+            elif 'manager' in row['user_id'].lower():
+                user_display = f"👨‍💼 {row['user_id']}"
+            
+            # Category color coding
+            category_icon = {
+                'Final Product': '🔥',
+                'Raw Material': '🧪',
+                'Pre-Final': '⚙️'
+            }
+            category_display = f"{category_icon.get(row['category'], '📦')} {row['category']}"
+            
+            display_data.append({
+                'Date': row['date_time'][:16],
+                'Branch': row['branch_name'],
+                'Category': category_display,
+                'Item': row['item_name'],
+                'Movement': movement_info,
+                'Quantity': f"{row['quantity']} {row['unit']}",
+                'Reference': row['reference'][:30] + "..." if row['reference'] and len(row['reference']) > 30 else (row['reference'] or '-'),
+                'Tracking': tracking_info,
+                'User': user_display
+            })
+        
+        if display_data:
+            movements_display_df = pd.DataFrame(display_data)
+            st.dataframe(movements_display_df, use_container_width=True, height=400)
+            
+            # Summary statistics
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                total_movements = len(movements_df)
+                st.metric("Total Movements", total_movements)
+            
+            with col2:
+                admin_actions = len(movements_df[movements_df['movement_type'].str.contains('ADMIN')])
+                st.metric("Admin Actions", admin_actions)
+            
+            with col3:
+                transfers = len(movements_df[movements_df['movement_type'].str.contains('TRANSFER')])
+                st.metric("Transfers", transfers)
+            
+            with col4:
+                production_moves = len(movements_df[movements_df['movement_type'] == 'PRODUCTION'])
+                st.metric("Production", production_moves)
+            
+            # Show activity breakdown by category
+            st.subheader("📊 Movement Breakdown")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                final_product_moves = len(movements_df[movements_df['category'] == 'Final Product'])
+                st.metric("🔥 Final Products", final_product_moves)
+            
+            with col2:
+                raw_material_moves = len(movements_df[movements_df['category'] == 'Raw Material'])
+                st.metric("🧪 Raw Materials", raw_material_moves)
+            
+            with col3:
+                pre_final_moves = len(movements_df[movements_df['category'] == 'Pre-Final'])
+                st.metric("⚙️ Components", pre_final_moves)
+            
+            # User activity comparison
+            if not movements_df.empty:
+                st.subheader("👥 Activity by User Type")
+                admin_count = len(movements_df[movements_df['user_id'].str.contains('admin', case=False)])
+                manager_count = len(movements_df[movements_df['user_id'].str.contains('manager', case=False)])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("🔧 Admin Actions", admin_count)
+                with col2:
+                    st.metric("👨‍💼 Manager Actions", manager_count)
+        else:
+            st.info("No movements found with the selected filters.")
+    else:
+        st.info("📊 No stock movements found.")
+        st.markdown("""
+        **Movements will appear here when:**
+        - ✅ Stock is updated (IN/OUT)
+        - ✅ Items are transferred between branches  
+        - ✅ Products are produced
+        - ✅ Admin makes stock adjustments
+        - ✅ Any inventory changes occur
+        
+        **Enhanced Tracking includes:**
+        - 📋 Batch numbers
+        - 🧾 Invoice numbers  
+        - 📝 PO numbers
+        - 👤 User identification
+        - 🏪 Branch information
+        """)
     """Enhanced user management"""
     if not check_permission('warehouse_manager'):
         st.error("❌ Access denied.")
