@@ -27,15 +27,17 @@ def init_user_database():
     # Create default users if not exist
     users_exist = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if users_exist == 0:
-        # Default warehouse manager
+        # Default users with new admin role
         manager_hash = hashlib.sha256("manager123".encode()).hexdigest()
         boss_hash = hashlib.sha256("boss123".encode()).hexdigest()
         viewer_hash = hashlib.sha256("viewer123".encode()).hexdigest()
+        admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
         
         default_users = [
             ("warehouse_manager", manager_hash, "warehouse_manager", "Warehouse Manager", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             ("boss", boss_hash, "boss", "Boss/Owner", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            ("viewer", viewer_hash, "viewer", "Staff Viewer", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            ("viewer", viewer_hash, "viewer", "Branch Viewer", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            ("admin", admin_hash, "admin", "Stock Admin", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         ]
         
         c.executemany("INSERT INTO users (username, password_hash, role, full_name, created_date) VALUES (?, ?, ?, ?, ?)", 
@@ -71,9 +73,10 @@ def check_permission(required_role):
     
     # Permission hierarchy
     roles_hierarchy = {
-        'warehouse_manager': 3,  # Full access
-        'boss': 2,              # Read all, limited write
-        'viewer': 1             # Final products only
+        'warehouse_manager': 4,  # Full access
+        'boss': 3,              # Read all, limited write
+        'admin': 2,             # Final stock updates only
+        'viewer': 1             # Final products by branch only
     }
     
     required_level = roles_hierarchy.get(required_role, 0)
@@ -81,14 +84,27 @@ def check_permission(required_role):
     
     return user_level >= required_level
 
-# Database setup
+# Database setup with branches
 def init_database():
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
     
-    # Items table
+    # Branches table
+    c.execute('''CREATE TABLE IF NOT EXISTS branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_code TEXT UNIQUE NOT NULL,
+        branch_name TEXT NOT NULL,
+        location TEXT,
+        manager_name TEXT,
+        contact_info TEXT,
+        created_date TEXT,
+        is_active INTEGER DEFAULT 1
+    )''')
+    
+    # Items table with branch support
     c.execute('''CREATE TABLE IF NOT EXISTS items (
-        id TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
+        branch_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         category TEXT NOT NULL,
         unit TEXT NOT NULL,
@@ -98,7 +114,9 @@ def init_database():
         location TEXT DEFAULT 'Main',
         warehouse_area TEXT DEFAULT 'General',
         created_date TEXT,
-        created_by TEXT
+        created_by TEXT,
+        PRIMARY KEY (id, branch_id),
+        FOREIGN KEY (branch_id) REFERENCES branches (id)
     )''')
     
     # Bill of Materials table
@@ -107,21 +125,29 @@ def init_database():
         final_product_id TEXT NOT NULL,
         ingredient_id TEXT NOT NULL,
         quantity_required REAL NOT NULL,
+        branch_id INTEGER NOT NULL,
         FOREIGN KEY (final_product_id) REFERENCES items (id),
-        FOREIGN KEY (ingredient_id) REFERENCES items (id)
+        FOREIGN KEY (ingredient_id) REFERENCES items (id),
+        FOREIGN KEY (branch_id) REFERENCES branches (id)
     )''')
     
-    # Stock movements table
+    # Stock movements table with branch transfers
     c.execute('''CREATE TABLE IF NOT EXISTS stock_movements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item_id TEXT NOT NULL,
+        branch_id INTEGER NOT NULL,
         movement_type TEXT NOT NULL,
         quantity REAL NOT NULL,
         reference TEXT,
         batch_nr TEXT,
         date_time TEXT,
         user_id TEXT,
-        FOREIGN KEY (item_id) REFERENCES items (id)
+        from_branch_id INTEGER,
+        to_branch_id INTEGER,
+        FOREIGN KEY (item_id) REFERENCES items (id),
+        FOREIGN KEY (branch_id) REFERENCES branches (id),
+        FOREIGN KEY (from_branch_id) REFERENCES branches (id),
+        FOREIGN KEY (to_branch_id) REFERENCES branches (id)
     )''')
     
     # Warehouse areas table
@@ -132,6 +158,19 @@ def init_database():
         capacity REAL,
         created_date TEXT
     )''')
+    
+    # Create default branches
+    default_branches = [
+        ("MAIN", "Main Warehouse", "Johannesburg", "Main Manager", "011-xxx-xxxx"),
+        ("CPT", "Cape Town Branch", "Cape Town", "Cape Town Manager", "021-xxx-xxxx"),
+        ("DBN", "Durban Branch", "Durban", "Durban Manager", "031-xxx-xxxx")
+    ]
+    
+    for branch_code, branch_name, location, manager, contact in default_branches:
+        c.execute("""INSERT OR IGNORE INTO branches 
+                     (branch_code, branch_name, location, manager_name, contact_info, created_date) 
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                 (branch_code, branch_name, location, manager, contact, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     
     # Create default warehouse areas
     default_areas = [
@@ -149,8 +188,30 @@ def init_database():
     conn.commit()
     conn.close()
 
+def get_all_branches(active_only=True):
+    """Get all branches"""
+    conn = sqlite3.connect('inventory.db')
+    query = "SELECT * FROM branches"
+    if active_only:
+        query += " WHERE is_active = 1"
+    query += " ORDER BY branch_name"
+    
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+def add_branch(branch_code, branch_name, location="", manager_name="", contact_info=""):
+    """Add new branch"""
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO branches (branch_code, branch_name, location, manager_name, contact_info, created_date)
+                 VALUES (?, ?, ?, ?, ?, ?)""",
+              (branch_code, branch_name, location, manager_name, contact_info, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
 def load_sample_data():
-    """Load your existing data into the new system"""
+    """Load sample data into main branch only"""
     
     # Check if data already exists
     conn = sqlite3.connect('inventory.db')
@@ -159,9 +220,17 @@ def load_sample_data():
     if c.fetchone()[0] > 0:
         conn.close()
         return  # Data already loaded
+    
+    # Get main branch ID
+    main_branch = c.execute("SELECT id FROM branches WHERE branch_code = 'MAIN'").fetchone()
+    if not main_branch:
+        conn.close()
+        return
+    
+    main_branch_id = main_branch[0]
     conn.close()
     
-    # Raw Materials from your Excel
+    # Raw Materials for main branch
     raw_materials = [
         ("LIG001", "LIGNO", "Raw Material", "kg", 300, 1000, "Raw Materials Storage"),
         ("KOH001", "KOH", "Raw Material", "kg", 40, 100, "Raw Materials Storage"),
@@ -198,111 +267,135 @@ def load_sample_data():
         ("PT9L001", "PINE TOWN 9L", "Final Product", "pieces", 14, 10, "Final Products"),
     ]
     
-    # Insert all data
+    # Insert all data to main branch
     all_items = raw_materials + prefinal_components + final_products
     
     for item_data in all_items:
         item_id, name, category, unit, current_stock, min_stock, warehouse_area = item_data
-        add_item(item_id, name, category, unit, current_stock, min_stock, 0, "Main", warehouse_area, "system")
+        add_item(item_id, name, category, unit, current_stock, min_stock, 0, "Main", warehouse_area, main_branch_id, "system")
 
-def add_item(item_id, name, category, unit, current_stock=0, min_stock=0, cost_per_unit=0, location="Main", warehouse_area="General", created_by="system"):
+def add_item(item_id, name, category, unit, current_stock=0, min_stock=0, cost_per_unit=0, location="Main", warehouse_area="General", branch_id=1, created_by="system"):
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
     c.execute('''INSERT OR REPLACE INTO items 
-                 (id, name, category, unit, current_stock, min_stock, cost_per_unit, location, warehouse_area, created_date, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (item_id, name, category, unit, current_stock, min_stock, cost_per_unit, location, warehouse_area,
+                 (id, branch_id, name, category, unit, current_stock, min_stock, cost_per_unit, location, warehouse_area, created_date, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (item_id, branch_id, name, category, unit, current_stock, min_stock, cost_per_unit, location, warehouse_area,
                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), created_by))
     conn.commit()
     conn.close()
 
-def get_all_items(user_role=None):
+def get_all_items(user_role=None, branch_id=None):
     conn = sqlite3.connect('inventory.db')
     
-    # Filter based on user role
+    # Build query based on user role and branch
     if user_role == "viewer":
-        query = "SELECT * FROM items WHERE category = 'Final Product' ORDER BY category, name"
+        query = """SELECT i.*, b.branch_name, b.branch_code 
+                   FROM items i 
+                   JOIN branches b ON i.branch_id = b.id 
+                   WHERE i.category = 'Final Product'"""
+    elif user_role == "admin":
+        query = """SELECT i.*, b.branch_name, b.branch_code 
+                   FROM items i 
+                   JOIN branches b ON i.branch_id = b.id 
+                   WHERE i.category = 'Final Product'"""
     else:
-        query = "SELECT * FROM items ORDER BY category, name"
+        query = """SELECT i.*, b.branch_name, b.branch_code 
+                   FROM items i 
+                   JOIN branches b ON i.branch_id = b.id"""
+    
+    if branch_id:
+        query += f" AND i.branch_id = {branch_id}"
+    
+    query += " ORDER BY b.branch_name, i.category, i.name"
     
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
-def get_warehouse_areas():
+def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quantity, reference="", user_id="system"):
+    """Transfer stock between branches"""
     conn = sqlite3.connect('inventory.db')
-    df = pd.read_sql_query("SELECT * FROM warehouse_areas ORDER BY area_name", conn)
-    conn.close()
-    return df
+    c = conn.cursor()
+    
+    try:
+        # Check if item exists in from_branch
+        from_item = c.execute("SELECT current_stock FROM items WHERE id = ? AND branch_id = ?", 
+                            (item_id, from_branch_id)).fetchone()
+        
+        if not from_item or from_item[0] < quantity:
+            conn.close()
+            return False, "Insufficient stock in source branch"
+        
+        # Check if item exists in to_branch, if not create it
+        to_item = c.execute("SELECT current_stock FROM items WHERE id = ? AND branch_id = ?", 
+                          (item_id, to_branch_id)).fetchone()
+        
+        if not to_item:
+            # Get item details from source branch
+            item_details = c.execute("""SELECT name, category, unit, min_stock, cost_per_unit, location, warehouse_area 
+                                       FROM items WHERE id = ? AND branch_id = ?""", 
+                                   (item_id, from_branch_id)).fetchone()
+            
+            if item_details:
+                # Create item in destination branch with 0 stock
+                c.execute("""INSERT INTO items (id, branch_id, name, category, unit, current_stock, min_stock, 
+                           cost_per_unit, location, warehouse_area, created_date, created_by)
+                           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)""",
+                         (item_id, to_branch_id, item_details[0], item_details[1], item_details[2], 
+                          item_details[3], item_details[4], item_details[5], item_details[6],
+                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+        
+        # Update stock in both branches
+        c.execute("UPDATE items SET current_stock = current_stock - ? WHERE id = ? AND branch_id = ?", 
+                 (quantity, item_id, from_branch_id))
+        c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ? AND branch_id = ?", 
+                 (quantity, item_id, to_branch_id))
+        
+        # Record movements
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Out movement from source branch
+        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, 
+                     date_time, user_id, from_branch_id, to_branch_id)
+                     VALUES (?, ?, 'TRANSFER_OUT', ?, ?, ?, ?, ?, ?)""",
+                 (item_id, from_branch_id, quantity, reference, timestamp, user_id, from_branch_id, to_branch_id))
+        
+        # In movement to destination branch
+        c.execute("""INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, 
+                     date_time, user_id, from_branch_id, to_branch_id)
+                     VALUES (?, ?, 'TRANSFER_IN', ?, ?, ?, ?, ?, ?)""",
+                 (item_id, to_branch_id, quantity, reference, timestamp, user_id, from_branch_id, to_branch_id))
+        
+        conn.commit()
+        conn.close()
+        return True, f"Successfully transferred {quantity} units"
+        
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return False, f"Transfer failed: {str(e)}"
 
-def update_stock(item_id, quantity, movement_type, reference="", batch_nr="", user_id="system"):
+def update_stock(item_id, branch_id, quantity, movement_type, reference="", batch_nr="", user_id="system"):
     conn = sqlite3.connect('inventory.db')
     c = conn.cursor()
     
     # Update current stock
-    if movement_type in ['IN', 'ADJUSTMENT_IN', 'PRODUCTION']:
-        c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ?", (quantity, item_id))
+    if movement_type in ['IN', 'ADJUSTMENT_IN', 'PRODUCTION', 'TRANSFER_IN']:
+        c.execute("UPDATE items SET current_stock = current_stock + ? WHERE id = ? AND branch_id = ?", 
+                 (quantity, item_id, branch_id))
     else:
-        c.execute("UPDATE items SET current_stock = current_stock - ? WHERE id = ?", (quantity, item_id))
+        c.execute("UPDATE items SET current_stock = current_stock - ? WHERE id = ? AND branch_id = ?", 
+                 (quantity, item_id, branch_id))
     
     # Record movement
-    c.execute('''INSERT INTO stock_movements (item_id, movement_type, quantity, reference, batch_nr, date_time, user_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
-              (item_id, movement_type, quantity, reference, batch_nr, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, date_time, user_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+              (item_id, branch_id, movement_type, quantity, reference, batch_nr, 
+               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
     
     conn.commit()
     conn.close()
-
-def get_bom(final_product_id):
-    """Get Bill of Materials for a product"""
-    conn = sqlite3.connect('inventory.db')
-    query = '''SELECT b.*, i.name as ingredient_name, i.unit, i.current_stock
-               FROM bom b
-               JOIN items i ON b.ingredient_id = i.id
-               WHERE b.final_product_id = ?'''
-    df = pd.read_sql_query(query, conn, params=[final_product_id])
-    conn.close()
-    return df
-
-def add_bom_item(final_product_id, ingredient_id, quantity_required):
-    """Add item to Bill of Materials"""
-    conn = sqlite3.connect('inventory.db')
-    c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO bom (final_product_id, ingredient_id, quantity_required)
-                 VALUES (?, ?, ?)''', (final_product_id, ingredient_id, quantity_required))
-    conn.commit()
-    conn.close()
-
-def produce_item(final_product_id, quantity_to_produce):
-    """Produce final product and automatically deduct ingredients"""
-    bom_df = get_bom(final_product_id)
-    
-    if bom_df.empty:
-        return False, "No Bill of Materials found for this product"
-    
-    # Check if enough ingredients available
-    insufficient_ingredients = []
-    for _, row in bom_df.iterrows():
-        required_qty = row['quantity_required'] * quantity_to_produce
-        if row['current_stock'] < required_qty:
-            insufficient_ingredients.append(f"{row['ingredient_name']}: Need {required_qty}, Have {row['current_stock']}")
-    
-    if insufficient_ingredients:
-        return False, f"Insufficient ingredients: {'; '.join(insufficient_ingredients)}"
-    
-    try:
-        # Deduct ingredients
-        for _, row in bom_df.iterrows():
-            required_qty = row['quantity_required'] * quantity_to_produce
-            update_stock(row['ingredient_id'], required_qty, 'OUT', f'Production of {quantity_to_produce} units', 'PRODUCTION', st.session_state.get('username', 'system'))
-        
-        # Add final product to stock
-        update_stock(final_product_id, quantity_to_produce, 'PRODUCTION', f'Production completed', '', st.session_state.get('username', 'system'))
-        
-        return True, f"Successfully produced {quantity_to_produce} units"
-    
-    except Exception as e:
-        return False, f"Error during production: {str(e)}"
 
 # Login system
 def show_login():
@@ -364,8 +457,8 @@ def show_login():
     <div class="login-header">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🔥</div>
         <h1 style="margin: 0; font-size: 2rem;">FLAMEBLOCK</h1>
-        <h2 style="margin: 0; font-size: 1.6rem; opacity: 0.9;">INVENTORY SYSTEM</h2>
-        <p style="margin: 0.5rem 0 0 0; font-size: 1rem; opacity: 0.8;">Professional Stock Control</p>
+        <h2 style="margin: 0; font-size: 1.6rem; opacity: 0.9;">MULTI-BRANCH INVENTORY</h2>
+        <p style="margin: 0.5rem 0 0 0; font-size: 1rem; opacity: 0.8;">Professional Stock Control Across All Branches</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -394,35 +487,50 @@ def show_login():
                 st.error("❌ Please enter both username and password")
     
     st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Show login info
+    st.markdown("---")
+    st.markdown("**🔑 Default Login Details:**")
+    st.markdown("""
+    - **Warehouse Manager**: `warehouse_manager` / `manager123`
+    - **Boss/Owner**: `boss` / `boss123`  
+    - **Branch Viewer**: `viewer` / `viewer123`
+    - **Stock Admin**: `admin` / `admin123`
+    """)
 
 # Mobile-friendly navigation
 def show_mobile_navigation(user_role):
-    """Mobile-friendly navigation system"""
+    """Mobile-friendly navigation system based on user role"""
     
     # Define menu items based on user role
     if user_role == "viewer":
         menu_items = [
-            ("📊", "Dashboard", "final_products_dashboard"),
+            ("🏪", "Branches", "branch_viewer"),
             ("📦", "Products", "final_products_view")
+        ]
+    elif user_role == "admin":
+        menu_items = [
+            ("📊", "Dashboard", "admin_dashboard"),
+            ("🔄", "Update Stock", "admin_stock_update"),
+            ("🏪", "All Branches", "admin_branch_view")
         ]
     elif user_role == "boss":
         menu_items = [
             ("📊", "Dashboard", "management_dashboard"),
+            ("🏪", "Branches", "branch_overview"),
             ("📦", "Stock View", "complete_stock_view"),
-            ("📈", "Movements", "stock_movements"),
+            ("📈", "Transfers", "branch_transfers"),
             ("📋", "Reports", "management_reports")
         ]
     else:  # warehouse_manager
         menu_items = [
             ("📊", "Dashboard", "dashboard"),
+            ("🏪", "Branches", "branch_management"),
             ("📦", "Stock", "stock_management"),
+            ("🔄", "Transfers", "stock_transfers"),
             ("🏭", "Production", "production_center"),
-            ("📈", "Movements", "stock_movements"),
             ("⚙️", "Items", "item_management"),
-            ("🧾", "BOM", "bom_management"),
-            ("🏪", "Areas", "warehouse_areas"),
             ("📋", "Reports", "reports"),
-            ("💾", "Excel", "excel_integration"),
             ("👥", "Users", "user_management")
         ]
     
@@ -499,7 +607,7 @@ def show_mobile_navigation(user_role):
 # Main application
 def main():
     st.set_page_config(
-        page_title="🔥 FLAMEBLOCK INVENTORY SYSTEM",  # ← Browser tab name
+        page_title="🔥 FLAMEBLOCK MULTI-BRANCH INVENTORY",
         layout="wide",
         initial_sidebar_state="collapsed",
         menu_items={
@@ -574,9 +682,9 @@ def main():
     # Check if database is empty and load sample data
     items_df = get_all_items()
     if items_df.empty:
-        with st.spinner("Setting up your inventory system..."):
+        with st.spinner("Setting up your multi-branch inventory system..."):
             load_sample_data()
-            st.success("✅ Loaded your existing inventory data!")
+            st.success("✅ Loaded your existing inventory data into Main Branch!")
             st.rerun()
     
     # Header with user info and logout
@@ -587,8 +695,8 @@ def main():
         <div style="display: flex; align-items: center; margin-bottom: 1rem;">
             <div style="font-size: 2rem; margin-right: 0.5rem;">🔥</div>
             <div>
-                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;">FLAMEBLOCK INVENTORY SYSTEM</h1>
-                <p style="margin: 0; color: #666; font-size: 0.8rem;">Professional Stock Control</p>
+                <h1 style="margin: 0; color: #262730; font-size: 1.8rem;">FLAMEBLOCK MULTI-BRANCH</h1>
+                <p style="margin: 0; color: #666; font-size: 0.8rem;">Multi-Branch Inventory Management</p>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -597,7 +705,8 @@ def main():
         role_display = {
             'warehouse_manager': '👨‍💼 Warehouse Manager',
             'boss': '👔 Boss/Owner', 
-            'viewer': '👁️ Viewer'
+            'viewer': '👁️ Branch Viewer',
+            'admin': '🔧 Stock Admin'
         }
         st.markdown(f"**{role_display.get(user_role, user_role)} - {st.session_state.full_name}**")
     
@@ -610,86 +719,457 @@ def main():
     # Mobile-friendly navigation
     current_page = show_mobile_navigation(user_role)
     
-    # Route to appropriate page
-    if current_page == "final_products_dashboard":
-        show_final_products_dashboard()
+    # Route to appropriate page based on user role
+    if current_page == "branch_viewer":
+        show_branch_viewer()
     elif current_page == "final_products_view":
         show_final_products_view()
+    elif current_page == "admin_dashboard":
+        show_admin_dashboard()
+    elif current_page == "admin_stock_update":
+        show_admin_stock_update()
+    elif current_page == "admin_branch_view":
+        show_admin_branch_view()
     elif current_page == "management_dashboard":
         show_management_dashboard()
+    elif current_page == "branch_overview":
+        show_branch_overview()
     elif current_page == "complete_stock_view":
         show_complete_stock_view()
-    elif current_page == "stock_movements":
-        show_stock_movements()
+    elif current_page == "branch_transfers":
+        show_branch_transfers()
     elif current_page == "management_reports":
         show_management_reports()
     elif current_page == "dashboard":
         show_dashboard()
+    elif current_page == "branch_management":
+        show_branch_management()
     elif current_page == "stock_management":
         show_stock_management()
+    elif current_page == "stock_transfers":
+        show_stock_transfers()
     elif current_page == "production_center":
         show_production_center()
     elif current_page == "item_management":
         show_item_management()
-    elif current_page == "bom_management":
-        show_bom_management()
-    elif current_page == "warehouse_areas":
-        show_warehouse_areas()
     elif current_page == "reports":
         show_reports()
-    elif current_page == "excel_integration":
-        show_excel_integration()
     elif current_page == "user_management":
         show_user_management()
 
-# Page functions
-def show_final_products_dashboard():
-    """Dashboard for viewers - final products only"""
-    st.header("📊 Final Products Dashboard")
+# NEW VIEWER PAGES
+def show_branch_viewer():
+    """Branch selection for viewers - final products only, no quantities"""
+    st.header("🏪 Branch Selection")
     
+    branches_df = get_all_branches()
+    
+    if not branches_df.empty:
+        # Branch selection
+        selected_branch_id = st.selectbox(
+            "🏪 Select Branch to View",
+            options=branches_df['id'].tolist(),
+            format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]} - {branches_df[branches_df['id']==x]['location'].iloc[0]}"
+        )
+        
+        if selected_branch_id:
+            branch_info = branches_df[branches_df['id'] == selected_branch_id].iloc[0]
+            
+            # Branch info card
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #FF4B4B 0%, #FF6B6B 100%); 
+                        padding: 1rem; border-radius: 10px; color: white; margin-bottom: 1rem;">
+                <h3 style="margin: 0;">🏪 {branch_info['branch_name']}</h3>
+                <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">📍 {branch_info['location']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Get final products for this branch
+            items_df = get_all_items("viewer", selected_branch_id)
+            
+            if not items_df.empty:
+                st.subheader("🔥 Available Products")
+                
+                # Show products without quantities - just availability
+                for _, item in items_df.iterrows():
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        # Show availability status without quantities
+                        if item['current_stock'] > 0:
+                            status = "✅ Available"
+                            status_color = "green"
+                        else:
+                            status = "❌ Out of Stock"
+                            status_color = "red"
+                        
+                        st.markdown(f"**{item['name']}**")
+                    
+                    with col2:
+                        st.markdown(f"<span style='color: {status_color}'>{status}</span>", unsafe_allow_html=True)
+                
+                # Summary counts
+                st.markdown("---")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    available = len(items_df[items_df['current_stock'] > 0])
+                    st.metric("✅ Available Products", available)
+                
+                with col2:
+                    out_of_stock = len(items_df[items_df['current_stock'] <= 0])
+                    st.metric("❌ Out of Stock", out_of_stock)
+            
+            else:
+                st.info(f"No final products found in {branch_info['branch_name']}")
+    else:
+        st.error("No branches configured in the system.")
+
+def show_final_products_view():
+    """Alternative view showing all branches with final products"""
+    st.header("📦 All Products Across Branches")
+    
+    branches_df = get_all_branches()
     items_df = get_all_items("viewer")
     
+    if not branches_df.empty and not items_df.empty:
+        # Group by branch
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            
+            if not branch_items.empty:
+                with st.expander(f"🏪 {branch['branch_name']} - {branch['location']} ({len(branch_items)} products)"):
+                    for _, item in branch_items.iterrows():
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"🔥 **{item['name']}**")
+                        
+                        with col2:
+                            if item['current_stock'] > 0:
+                                st.success("✅ Available")
+                            else:
+                                st.error("❌ Out of Stock")
+
+# NEW ADMIN PAGES
+def show_admin_dashboard():
+    """Dashboard for admin users - final products summary"""
+    st.header("🔧 Stock Admin Dashboard")
+    
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    items_df = get_all_items("admin")
+    
     if not items_df.empty:
-        col1, col2, col3 = st.columns(3)
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Products", len(items_df))
+            total_products = len(items_df)
+            st.metric("Total Final Products", total_products)
         
         with col2:
+            total_branches = len(branches_df)
+            st.metric("Active Branches", total_branches)
+        
+        with col3:
             in_stock = len(items_df[items_df['current_stock'] > 0])
             st.metric("In Stock", in_stock)
         
-        with col3:
-            low_stock = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
-            st.metric("Low Stock", low_stock)
+        with col4:
+            out_of_stock = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Out of Stock", out_of_stock)
         
-        # Product status
-        st.subheader("🏭 Product Status")
+        # Branch-wise summary
+        st.subheader("📊 Branch Summary")
         
-        for _, item in items_df.iterrows():
-            col1, col2, col3 = st.columns([3, 1, 1])
-            
-            with col1:
-                status = "✅" if item['current_stock'] > item['min_stock'] else "⚠️" if item['current_stock'] > 0 else "❌"
-                st.write(f"{status} **{item['name']}**")
-            
-            with col2:
-                st.write(f"{item['current_stock']} {item['unit']}")
-            
-            with col3:
-                if item['current_stock'] <= item['min_stock']:
-                    st.error("LOW")
-                else:
-                    st.success("OK")
-    else:
-        st.info("No final products found.")
+        branch_summary = []
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            if not branch_items.empty:
+                in_stock_count = len(branch_items[branch_items['current_stock'] > 0])
+                total_count = len(branch_items)
+                branch_summary.append({
+                    'Branch': branch['branch_name'],
+                    'Location': branch['location'],
+                    'Products': total_count,
+                    'In Stock': in_stock_count,
+                    'Out of Stock': total_count - in_stock_count
+                })
+        
+        if branch_summary:
+            summary_df = pd.DataFrame(branch_summary)
+            st.dataframe(summary_df, use_container_width=True)
 
-def show_final_products_view():
-    """Detailed view of final products for viewers"""
-    st.header("📦 Final Products")
+def show_admin_stock_update():
+    """Admin interface for updating final product stock only"""
+    st.header("🔄 Update Final Product Stock")
     
-    items_df = get_all_items("viewer")
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
     
+    branches_df = get_all_branches()
+    
+    # Branch selection
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        selected_branch_id = st.selectbox(
+            "🏪 Select Branch",
+            options=branches_df['id'].tolist(),
+            format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+        )
+    
+    if selected_branch_id:
+        branch_info = branches_df[branches_df['id'] == selected_branch_id].iloc[0]
+        
+        with col2:
+            st.info(f"📍 {branch_info['branch_name']} - {branch_info['location']}")
+        
+        # Get final products for this branch
+        items_df = get_all_items("admin", selected_branch_id)
+        
+        if not items_df.empty:
+            # Show current stock levels
+            st.subheader("📦 Current Stock Levels")
+            
+            display_df = items_df[['name', 'current_stock', 'unit']].copy()
+            display_df.columns = ['Product', 'Current Stock', 'Unit']
+            st.dataframe(display_df, use_container_width=True)
+            
+            # Stock update form
+            st.subheader("🔄 Update Stock")
+            
+            with st.form("admin_stock_update"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    selected_item = st.selectbox(
+                        "Product",
+                        options=items_df['id'].tolist(),
+                        format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]}"
+                    )
+                
+                with col2:
+                    update_type = st.selectbox("Update Type", ["SET", "ADD", "SUBTRACT"])
+                    quantity = st.number_input("Quantity", min_value=0.0, value=0.0)
+                
+                with col3:
+                    reference = st.text_input("Reference/Reason", placeholder="Stock count, delivery, etc.")
+                    submitted = st.form_submit_button("🔄 Update Stock", type="primary")
+                
+                if submitted and selected_item and quantity >= 0:
+                    current_item = items_df[items_df['id'] == selected_item].iloc[0]
+                    
+                    if update_type == "SET":
+                        # Set absolute value
+                        conn = sqlite3.connect('inventory.db')
+                        c = conn.cursor()
+                        c.execute("UPDATE items SET current_stock = ? WHERE id = ? AND branch_id = ?", 
+                                 (quantity, selected_item, selected_branch_id))
+                        
+                        # Record movement
+                        movement_type = "ADMIN_SET"
+                        c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, date_time, user_id)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                                  (selected_item, selected_branch_id, movement_type, quantity, reference, 
+                                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ Set {current_item['name']} stock to {quantity} {current_item['unit']}")
+                        st.rerun()
+                    
+                    elif update_type == "ADD":
+                        update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', reference, '', st.session_state.username)
+                        st.success(f"✅ Added {quantity} {current_item['unit']} to {current_item['name']}")
+                        st.rerun()
+                    
+                    elif update_type == "SUBTRACT":
+                        if current_item['current_stock'] >= quantity:
+                            update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', reference, '', st.session_state.username)
+                            st.success(f"✅ Subtracted {quantity} {current_item['unit']} from {current_item['name']}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available.")
+        else:
+            st.info(f"No final products found in {branch_info['branch_name']}")
+
+def show_admin_branch_view():
+    """Admin view of all branches and their final products"""
+    st.header("🏪 All Branches - Final Products")
+    
+    if not check_permission('admin'):
+        st.error("❌ Access denied.")
+        return
+    
+    branches_df = get_all_branches()
+    items_df = get_all_items("admin")
+    
+    if not branches_df.empty:
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            
+            with st.expander(f"🏪 {branch['branch_name']} - {branch['location']} ({len(branch_items)} products)"):
+                if not branch_items.empty:
+                    display_df = branch_items[['name', 'current_stock', 'unit']].copy()
+                    display_df.columns = ['Product', 'Stock', 'Unit']
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # Quick stats
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        in_stock = len(branch_items[branch_items['current_stock'] > 0])
+                        st.metric("In Stock", in_stock)
+                    with col2:
+                        out_of_stock = len(branch_items[branch_items['current_stock'] <= 0])
+                        st.metric("Out of Stock", out_of_stock)
+                else:
+                    st.info("No final products in this branch")
+
+# ENHANCED MANAGEMENT PAGES
+def show_management_dashboard():
+    """Enhanced dashboard for boss with branch overview"""
+    st.header("📊 Management Dashboard")
+    
+    branches_df = get_all_branches()
+    items_df = get_all_items()
+    
+    if not items_df.empty:
+        # High-level metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_branches = len(branches_df)
+            st.metric("Active Branches", total_branches)
+        
+        with col2:
+            total_items = len(items_df)
+            st.metric("Total Items", total_items)
+        
+        with col3:
+            final_products = len(items_df[items_df['category'] == 'Final Product'])
+            st.metric("Final Products", final_products)
+        
+        with col4:
+            critical_items = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Critical Items", critical_items)
+        
+        # Branch overview
+        st.subheader("🏪 Branch Overview")
+        
+        branch_data = []
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            if not branch_items.empty:
+                raw_materials = len(branch_items[branch_items['category'] == 'Raw Material'])
+                pre_final = len(branch_items[branch_items['category'] == 'Pre-Final'])
+                final_products = len(branch_items[branch_items['category'] == 'Final Product'])
+                critical = len(branch_items[branch_items['current_stock'] <= 0])
+                
+                branch_data.append({
+                    'Branch': branch['branch_name'],
+                    'Location': branch['location'],
+                    'Raw Materials': raw_materials,
+                    'Components': pre_final,
+                    'Final Products': final_products,
+                    'Critical': critical
+                })
+        
+        if branch_data:
+            branch_df = pd.DataFrame(branch_data)
+            st.dataframe(branch_df, use_container_width=True)
+        
+        # Critical alerts
+        critical_items = items_df[items_df['current_stock'] <= 0]
+        if not critical_items.empty:
+            st.error(f"🚨 CRITICAL: {len(critical_items)} items are OUT OF STOCK across all branches!")
+            
+            # Group by branch
+            for _, branch in branches_df.iterrows():
+                branch_critical = critical_items[critical_items['branch_id'] == branch['id']]
+                if not branch_critical.empty:
+                    st.write(f"**{branch['branch_name']}:** {len(branch_critical)} items out of stock")
+
+def show_branch_overview():
+    """Branch overview for management"""
+    st.header("🏪 Branch Overview")
+    
+    branches_df = get_all_branches()
+    
+    if not branches_df.empty:
+        # Branch cards
+        for _, branch in branches_df.iterrows():
+            with st.expander(f"🏪 {branch['branch_name']} - {branch['location']}", expanded=True):
+                
+                # Branch info
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Manager:** {branch['manager_name']}")
+                    st.write(f"**Contact:** {branch['contact_info']}")
+                
+                with col2:
+                    st.write(f"**Code:** {branch['branch_code']}")
+                    st.write(f"**Created:** {branch['created_date'][:10]}")
+                
+                # Branch statistics
+                items_df = get_all_items(branch_id=branch['id'])
+                
+                if not items_df.empty:
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("Total Items", len(items_df))
+                    
+                    with col2:
+                        raw_count = len(items_df[items_df['category'] == 'Raw Material'])
+                        st.metric("Raw Materials", raw_count)
+                    
+                    with col3:
+                        final_count = len(items_df[items_df['category'] == 'Final Product'])
+                        st.metric("Final Products", final_count)
+                    
+                    with col4:
+                        critical_count = len(items_df[items_df['current_stock'] <= 0])
+                        st.metric("Out of Stock", critical_count)
+                else:
+                    st.info("No items in this branch")
+
+def show_complete_stock_view():
+    """Complete stock view across all branches for boss"""
+    st.header("📦 Complete Stock View")
+    
+    branches_df = get_all_branches()
+    
+    # Branch filter
+    branch_filter = st.selectbox(
+        "🏪 Filter by Branch",
+        options=["All Branches"] + branches_df['branch_name'].tolist()
+    )
+    
+    # Category filter
+    category_filter = st.selectbox(
+        "📦 Filter by Category", 
+        ["All Categories", "Raw Material", "Pre-Final", "Final Product"]
+    )
+    
+    # Get filtered data
+    if branch_filter == "All Branches":
+        items_df = get_all_items()
+    else:
+        branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
+        items_df = get_all_items(branch_id=branch_id)
+    
+    if category_filter != "All Categories":
+        items_df = items_df[items_df['category'] == category_filter]
+    
+    # Display results
     if not items_df.empty:
         # Add status column
         def get_status(row):
@@ -702,16 +1182,146 @@ def show_final_products_view():
         
         items_df['Status'] = items_df.apply(get_status, axis=1)
         
-        # Display table
-        display_df = items_df[['name', 'current_stock', 'min_stock', 'unit', 'Status']]
-        display_df.columns = ['Product', 'Stock', 'Min', 'Unit', 'Status']
+        display_df = items_df[['branch_name', 'name', 'category', 'current_stock', 'min_stock', 'unit', 'Status']]
+        display_df.columns = ['Branch', 'Item', 'Category', 'Stock', 'Min', 'Unit', 'Status']
         
         st.dataframe(display_df, use_container_width=True, height=400)
-
-def show_management_dashboard():
-    """Dashboard for boss - complete overview"""
-    st.header("📊 Management Dashboard")
+        
+        # Summary stats
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Items", len(items_df))
+        
+        with col2:
+            in_stock = len(items_df[items_df['current_stock'] > 0])
+            st.metric("In Stock", in_stock)
+        
+        with col3:
+            low_stock = len(items_df[(items_df['current_stock'] <= items_df['min_stock']) & (items_df['current_stock'] > 0)])
+            st.metric("Low Stock", low_stock)
+        
+        with col4:
+            out_of_stock = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Out of Stock", out_of_stock)
     
+    else:
+        st.info("No items found with the selected filters.")
+
+def show_branch_transfers():
+    """Show branch transfer history for management"""
+    st.header("📈 Branch Transfer History")
+    
+    # Get transfer movements
+    conn = sqlite3.connect('inventory.db')
+    transfers_df = pd.read_sql_query('''
+        SELECT sm.*, i.name as item_name, i.unit,
+               b1.branch_name as from_branch_name,
+               b2.branch_name as to_branch_name
+        FROM stock_movements sm
+        JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+        LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+        LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+        WHERE sm.movement_type IN ('TRANSFER_OUT', 'TRANSFER_IN')
+        ORDER BY sm.date_time DESC 
+        LIMIT 100
+    ''', conn)
+    conn.close()
+    
+    if not transfers_df.empty:
+        # Process transfers to show paired movements
+        transfer_pairs = []
+        processed_ids = set()
+        
+        for _, row in transfers_df.iterrows():
+            if row['id'] in processed_ids:
+                continue
+            
+            if row['movement_type'] == 'TRANSFER_OUT':
+                # Find corresponding TRANSFER_IN
+                matching_in = transfers_df[
+                    (transfers_df['item_id'] == row['item_id']) &
+                    (transfers_df['movement_type'] == 'TRANSFER_IN') &
+                    (transfers_df['quantity'] == row['quantity']) &
+                    (transfers_df['date_time'] == row['date_time'])
+                ]
+                
+                if not matching_in.empty:
+                    in_row = matching_in.iloc[0]
+                    transfer_pairs.append({
+                        'Date': row['date_time'][:16],
+                        'Item': row['item_name'],
+                        'Quantity': f"{row['quantity']} {row['unit']}",
+                        'From': row['from_branch_name'],
+                        'To': row['to_branch_name'],
+                        'Reference': row['reference'],
+                        'User': row['user_id']
+                    })
+                    processed_ids.add(row['id'])
+                    processed_ids.add(in_row['id'])
+        
+        if transfer_pairs:
+            transfers_display_df = pd.DataFrame(transfer_pairs)
+            st.dataframe(transfers_display_df, use_container_width=True, height=400)
+        else:
+            st.info("No branch transfers found.")
+    else:
+        st.info("No transfer history available.")
+
+def show_management_reports():
+    """Enhanced management reports with branch breakdown"""
+    st.header("📋 Management Reports")
+    
+    branches_df = get_all_branches()
+    items_df = get_all_items()
+    
+    if items_df.empty:
+        st.info("No data available.")
+        return
+    
+    # Branch performance summary
+    st.subheader("🏪 Branch Performance")
+    
+    branch_summary = []
+    for _, branch in branches_df.iterrows():
+        branch_items = items_df[items_df['branch_id'] == branch['id']]
+        if not branch_items.empty:
+            total_items = len(branch_items)
+            final_products = len(branch_items[branch_items['category'] == 'Final Product'])
+            in_stock = len(branch_items[branch_items['current_stock'] > 0])
+            critical = len(branch_items[branch_items['current_stock'] <= 0])
+            
+            branch_summary.append({
+                'Branch': branch['branch_name'],
+                'Location': branch['location'],
+                'Total Items': total_items,
+                'Final Products': final_products,
+                'In Stock': in_stock,
+                'Critical': critical,
+                'Performance': f"{(in_stock/total_items*100):.1f}%" if total_items > 0 else "0%"
+            })
+    
+    if branch_summary:
+        summary_df = pd.DataFrame(branch_summary)
+        st.dataframe(summary_df, use_container_width=True)
+    
+    # Category breakdown
+    st.subheader("📊 Inventory Breakdown")
+    
+    category_summary = items_df.groupby(['branch_name', 'category']).agg({
+        'current_stock': 'sum',
+        'name': 'count'
+    }).rename(columns={'name': 'items', 'current_stock': 'total_stock'}).reset_index()
+    
+    st.dataframe(category_summary, use_container_width=True)
+
+# WAREHOUSE MANAGER PAGES
+def show_dashboard():
+    """Enhanced dashboard for warehouse manager with branch view"""
+    st.header("📊 Warehouse Manager Dashboard")
+    
+    branches_df = get_all_branches()
     items_df = get_all_items()
     
     if not items_df.empty:
@@ -719,291 +1329,414 @@ def show_management_dashboard():
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Items", len(items_df))
+            total_branches = len(branches_df)
+            st.metric("Active Branches", total_branches)
         
         with col2:
-            raw_materials = len(items_df[items_df['category'] == 'Raw Material'])
-            st.metric("Raw Materials", raw_materials)
+            total_items = len(items_df)
+            st.metric("Total Items", total_items)
         
         with col3:
             final_products = len(items_df[items_df['category'] == 'Final Product'])
             st.metric("Final Products", final_products)
         
         with col4:
-            low_stock = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
-            st.metric("Need Attention", low_stock)
+            critical_items = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Critical Items", critical_items)
         
-        # Critical alerts
-        critical_items = items_df[items_df['current_stock'] <= 0]
-        if not critical_items.empty:
-            st.error(f"🚨 CRITICAL: {len(critical_items)} items are OUT OF STOCK!")
-            st.dataframe(critical_items[['name', 'category', 'current_stock']])
-
-def show_complete_stock_view():
-    """Complete stock view for boss"""
-    st.header("📦 Complete Stock")
-    
-    items_df = get_all_items()
-    
-    # Simple filters for mobile
-    category_filter = st.selectbox("Category", ["All"] + list(items_df['category'].unique()))
-    
-    # Apply filters
-    if category_filter != "All":
-        items_df = items_df[items_df['category'] == category_filter]
-    
-    # Display results
-    if not items_df.empty:
-        display_df = items_df[['name', 'category', 'current_stock', 'min_stock', 'unit']]
-        display_df.columns = ['Item', 'Category', 'Stock', 'Min', 'Unit']
-        st.dataframe(display_df, use_container_width=True, height=400)
-
-def show_stock_movements():
-    """Show stock movement history"""
-    st.header("📈 Stock Movements")
-    
-    # Get movements data
-    conn = sqlite3.connect('inventory.db')
-    movements_df = pd.read_sql_query('''SELECT sm.*, i.name as item_name, i.unit
-                                       FROM stock_movements sm
-                                       JOIN items i ON sm.item_id = i.id
-                                       ORDER BY sm.date_time DESC LIMIT 100''', conn)
-    conn.close()
-    
-    if not movements_df.empty:
-        movements_df['date_time'] = pd.to_datetime(movements_df['date_time']).dt.strftime('%m-%d %H:%M')
+        # Branch status overview
+        st.subheader("🏪 Branch Status")
         
-        display_df = movements_df[['date_time', 'item_name', 'movement_type', 'quantity', 'unit']]
-        display_df.columns = ['Date', 'Item', 'Type', 'Qty', 'Unit']
-        
-        st.dataframe(display_df, use_container_width=True, height=400)
-    else:
-        st.info("No movements found.")
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            
+            if not branch_items.empty:
+                with st.expander(f"🏪 {branch['branch_name']} ({len(branch_items)} items)"):
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        raw_count = len(branch_items[branch_items['category'] == 'Raw Material'])
+                        st.metric("Raw Materials", raw_count)
+                    
+                    with col2:
+                        pre_final_count = len(branch_items[branch_items['category'] == 'Pre-Final'])
+                        st.metric("Components", pre_final_count)
+                    
+                    with col3:
+                        final_count = len(branch_items[branch_items['category'] == 'Final Product'])
+                        st.metric("Final Products", final_count)
+                    
+                    with col4:
+                        critical_count = len(branch_items[branch_items['current_stock'] <= 0])
+                        st.metric("Critical", critical_count)
+                    
+                    # Show critical items
+                    critical_items = branch_items[branch_items['current_stock'] <= 0]
+                    if not critical_items.empty:
+                        st.error(f"🚨 Critical items in {branch['branch_name']}:")
+                        for _, item in critical_items.iterrows():
+                            st.write(f"❌ {item['name']}")
 
-def show_management_reports():
-    """Management reports for boss"""
-    st.header("📋 Management Reports")
+def show_branch_management():
+    """Branch management interface for warehouse manager"""
+    st.header("🏪 Branch Management")
     
-    items_df = get_all_items()
-    if items_df.empty:
-        st.info("No data available.")
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied.")
         return
     
-    # Category summary
-    st.subheader("📊 By Category")
-    category_summary = items_df.groupby('category').agg({
-        'current_stock': 'sum',
-        'name': 'count'
-    }).rename(columns={'name': 'items', 'current_stock': 'total_stock'})
+    tab1, tab2 = st.tabs(["🏪 View Branches", "➕ Add Branch"])
     
-    st.dataframe(category_summary, use_container_width=True)
+    with tab1:
+        st.subheader("🏪 All Branches")
+        
+        branches_df = get_all_branches()
+        
+        if not branches_df.empty:
+            for _, branch in branches_df.iterrows():
+                with st.expander(f"🏪 {branch['branch_name']} - {branch['location']}", expanded=True):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Branch Code:** {branch['branch_code']}")
+                        st.write(f"**Manager:** {branch['manager_name']}")
+                        st.write(f"**Contact:** {branch['contact_info']}")
+                    
+                    with col2:
+                        st.write(f"**Created:** {branch['created_date'][:10]}")
+                        
+                        # Branch statistics
+                        items_df = get_all_items(branch_id=branch['id'])
+                        if not items_df.empty:
+                            st.write(f"**Items:** {len(items_df)}")
+                            critical_count = len(items_df[items_df['current_stock'] <= 0])
+                            st.write(f"**Critical:** {critical_count}")
+                        else:
+                            st.write("**Items:** 0")
+        else:
+            st.info("No branches found.")
     
-    # Low stock items
-    low_stock = items_df[items_df['current_stock'] <= items_df['min_stock']]
-    if not low_stock.empty:
-        st.subheader("⚠️ Need Attention")
-        display_low = low_stock[['name', 'current_stock', 'min_stock', 'unit']]
-        display_low.columns = ['Item', 'Current', 'Min', 'Unit']
-        st.dataframe(display_low, use_container_width=True)
-
-def show_dashboard():
-    """Main dashboard for warehouse manager"""
-    st.header("📊 Dashboard")
-    
-    items_df = get_all_items()
-    
-    if not items_df.empty:
-        # Main metrics
-        col1, col2, col3, col4 = st.columns(4)
+    with tab2:
+        st.subheader("➕ Add New Branch")
         
-        with col1:
-            st.metric("Items", len(items_df))
-        
-        with col2:
-            raw_materials = len(items_df[items_df['category'] == 'Raw Material'])
-            st.metric("Raw", raw_materials)
-        
-        with col3:
-            pre_final = len(items_df[items_df['category'] == 'Pre-Final'])
-            st.metric("Components", pre_final)
-        
-        with col4:
-            final_products = len(items_df[items_df['category'] == 'Final Product'])
-            st.metric("Final", final_products)
-        
-        # Critical alerts
-        low_stock_items = items_df[items_df['current_stock'] <= items_df['min_stock']]
-        out_of_stock = items_df[items_df['current_stock'] <= 0]
-        
-        if not out_of_stock.empty:
-            st.error("🚨 **OUT OF STOCK**")
-            for _, item in out_of_stock.iterrows():
-                st.write(f"❌ {item['name']}")
-        
-        if not low_stock_items.empty and out_of_stock.empty:
-            st.warning("⚠️ **LOW STOCK**")
-            for _, item in low_stock_items.iterrows():
-                if item['current_stock'] > 0:
-                    st.write(f"⚠️ {item['name']}: {item['current_stock']}/{item['min_stock']}")
-        
-        if out_of_stock.empty and low_stock_items.empty:
-            st.success("✅ All stock levels OK!")
+        with st.form("add_branch_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                branch_code = st.text_input("Branch Code", placeholder="e.g., DBN, CPT, JHB")
+                branch_name = st.text_input("Branch Name", placeholder="e.g., Durban Branch")
+                location = st.text_input("Location", placeholder="e.g., Durban, KZN")
+            
+            with col2:
+                manager_name = st.text_input("Manager Name", placeholder="Branch Manager")
+                contact_info = st.text_input("Contact Info", placeholder="Phone/Email")
+            
+            submitted = st.form_submit_button("🏪 Add Branch", type="primary")
+            
+            if submitted:
+                if branch_code and branch_name:
+                    try:
+                        add_branch(branch_code.upper(), branch_name, location, manager_name, contact_info)
+                        st.success(f"✅ Added branch: {branch_name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error adding branch: {str(e)}")
+                else:
+                    st.error("❌ Please fill in Branch Code and Branch Name")
 
 def show_stock_management():
-    """Stock management for warehouse manager"""
+    """Enhanced stock management with branch selection"""
     st.header("📦 Stock Management")
     
     if not check_permission('warehouse_manager'):
         st.error("❌ Access denied.")
         return
     
-    items_df = get_all_items()
+    branches_df = get_all_branches()
     
-    if items_df.empty:
-        st.info("No items found.")
-        return
+    # Branch selection
+    selected_branch_id = st.selectbox(
+        "🏪 Select Branch",
+        options=branches_df['id'].tolist(),
+        format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]} - {branches_df[branches_df['id']==x]['location'].iloc[0]}"
+    )
     
-    # Simple category filter
-    category_filter = st.selectbox("Category", ["All", "Raw Material", "Pre-Final", "Final Product"])
-    
-    # Apply filter
-    if category_filter != "All":
-        items_df = items_df[items_df['category'] == category_filter]
-    
-    # Display stock table
-    if not items_df.empty:
-        def get_status(row):
-            if row['current_stock'] <= 0:
-                return "❌ OUT"
-            elif row['current_stock'] <= row['min_stock']:
-                return "⚠️ LOW"
-            else:
-                return "✅ OK"
+    if selected_branch_id:
+        branch_info = branches_df[branches_df['id'] == selected_branch_id].iloc[0]
+        st.info(f"📍 Managing stock for: **{branch_info['branch_name']}** - {branch_info['location']}")
         
-        items_df['Status'] = items_df.apply(get_status, axis=1)
+        items_df = get_all_items(branch_id=selected_branch_id)
         
-        display_df = items_df[['id', 'name', 'current_stock', 'unit', 'Status']]
-        display_df.columns = ['ID', 'Name', 'Stock', 'Unit', 'Status']
+        if items_df.empty:
+            st.warning(f"No items found in {branch_info['branch_name']}. Add items or transfer from other branches.")
+            return
         
-        st.dataframe(display_df, use_container_width=True, height=300)
+        # Filters
+        category_filter = st.selectbox("Category", ["All", "Raw Material", "Pre-Final", "Final Product"])
         
-        # Quick stock adjustment
-        st.subheader("⚡ Quick Update")
+        # Apply filter
+        if category_filter != "All":
+            items_df = items_df[items_df['category'] == category_filter]
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            selected_item = st.selectbox("Item", 
-                                       options=items_df['id'].tolist(),
-                                       format_func=lambda x: f"{x} - {items_df[items_df['id']==x]['name'].iloc[0]}")
-            adjustment_qty = st.number_input("Quantity", value=0.0)
-        
-        with col2:
-            movement_type = st.selectbox("Type", ["IN", "OUT"])
-            reference = st.text_input("Reference", placeholder="Reason")
-        
-        if st.button("💾 Update Stock", type="primary"):
-            if selected_item and adjustment_qty != 0:
-                update_stock(selected_item, abs(adjustment_qty), movement_type, reference, "", st.session_state.username)
-                st.success("Stock updated!")
-                st.rerun()
+        # Display stock table
+        if not items_df.empty:
+            def get_status(row):
+                if row['current_stock'] <= 0:
+                    return "❌ OUT"
+                elif row['current_stock'] <= row['min_stock']:
+                    return "⚠️ LOW"
+                else:
+                    return "✅ OK"
+            
+            items_df['Status'] = items_df.apply(get_status, axis=1)
+            
+            display_df = items_df[['id', 'name', 'current_stock', 'unit', 'Status']]
+            display_df.columns = ['ID', 'Name', 'Stock', 'Unit', 'Status']
+            
+            st.dataframe(display_df, use_container_width=True, height=300)
+            
+            # Quick stock adjustment
+            st.subheader("⚡ Quick Update")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                selected_item = st.selectbox("Item", 
+                                           options=items_df['id'].tolist(),
+                                           format_func=lambda x: f"{x} - {items_df[items_df['id']==x]['name'].iloc[0]}")
+                adjustment_qty = st.number_input("Quantity", value=0.0)
+            
+            with col2:
+                movement_type = st.selectbox("Type", ["IN", "OUT"])
+                reference = st.text_input("Reference", placeholder="Reason")
+            
+            if st.button("💾 Update Stock", type="primary"):
+                if selected_item and adjustment_qty != 0:
+                    update_stock(selected_item, selected_branch_id, abs(adjustment_qty), movement_type, reference, "", st.session_state.username)
+                    st.success("Stock updated!")
+                    st.rerun()
 
-def show_production_center():
-    """Production center for warehouse manager"""
+def show_stock_transfers():
+    """Stock transfer interface between branches"""
+    st.header("🔄 Branch Stock Transfers")
+    
     if not check_permission('warehouse_manager'):
         st.error("❌ Access denied.")
         return
     
-    st.header("🏭 Production")
+    branches_df = get_all_branches()
     
-    items_df = get_all_items()
-    final_products = items_df[items_df['category'] == 'Final Product']
-    
-    if final_products.empty:
-        st.warning("No final products found.")
+    if len(branches_df) < 2:
+        st.warning("Need at least 2 branches to perform transfers.")
         return
     
-    col1, col2 = st.columns(2)
+    tab1, tab2 = st.tabs(["🔄 Transfer Stock", "📈 Transfer History"])
     
-    with col1:
-        selected_product = st.selectbox("Product",
-                                      options=final_products['id'].tolist(),
-                                      format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}")
+    with tab1:
+        st.subheader("🔄 Transfer Stock Between Branches")
         
-        quantity_to_produce = st.number_input("Quantity", min_value=1, value=1)
-        
-        if st.button("🚀 Start Production", type="primary"):
-            if selected_product and quantity_to_produce > 0:
-                success, message = produce_item(selected_product, quantity_to_produce)
+        with st.form("stock_transfer_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                from_branch_id = st.selectbox(
+                    "📤 From Branch",
+                    options=branches_df['id'].tolist(),
+                    format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+                )
+            
+            with col2:
+                to_branch_id = st.selectbox(
+                    "📥 To Branch",
+                    options=[bid for bid in branches_df['id'].tolist() if bid != from_branch_id],
+                    format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+                )
+            
+            if from_branch_id and to_branch_id:
+                # Get items from source branch
+                from_items_df = get_all_items(branch_id=from_branch_id)
+                available_items = from_items_df[from_items_df['current_stock'] > 0]
                 
-                if success:
-                    st.success(message)
-                    st.rerun()
+                if not available_items.empty:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        selected_item = st.selectbox(
+                            "📦 Item to Transfer",
+                            options=available_items['id'].tolist(),
+                            format_func=lambda x: f"{available_items[available_items['id']==x]['name'].iloc[0]} ({available_items[available_items['id']==x]['current_stock'].iloc[0]} {available_items[available_items['id']==x]['unit'].iloc[0]})"
+                        )
+                    
+                    with col2:
+                        if selected_item:
+                            max_qty = available_items[available_items['id'] == selected_item]['current_stock'].iloc[0]
+                            transfer_qty = st.number_input("Quantity to Transfer", min_value=0.0, max_value=max_qty, value=0.0)
+                    
+                    reference = st.text_input("Transfer Reference", placeholder="Reason for transfer")
+                    
+                    submitted = st.form_submit_button("🔄 Transfer Stock", type="primary")
+                    
+                    if submitted and selected_item and transfer_qty > 0:
+                        success, message = transfer_stock_between_branches(
+                            selected_item, from_branch_id, to_branch_id, transfer_qty, reference, st.session_state.username
+                        )
+                        
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
                 else:
-                    st.error(message)
+                    st.warning("No items with stock available in the selected source branch.")
     
-    with col2:
-        if selected_product:
-            st.subheader("📋 Requirements")
+    with tab2:
+        st.subheader("📈 Recent Transfers")
+        
+        # Get recent transfers
+        conn = sqlite3.connect('inventory.db')
+        transfers_df = pd.read_sql_query('''
+            SELECT sm.*, i.name as item_name, i.unit,
+                   b1.branch_name as from_branch_name,
+                   b2.branch_name as to_branch_name
+            FROM stock_movements sm
+            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+            LEFT JOIN branches b1 ON sm.from_branch_id = b1.id
+            LEFT JOIN branches b2 ON sm.to_branch_id = b2.id
+            WHERE sm.movement_type IN ('TRANSFER_OUT', 'TRANSFER_IN')
+            ORDER BY sm.date_time DESC 
+            LIMIT 50
+        ''', conn)
+        conn.close()
+        
+        if not transfers_df.empty:
+            # Show only OUT transfers to avoid duplicates
+            out_transfers = transfers_df[transfers_df['movement_type'] == 'TRANSFER_OUT']
             
-            bom = get_bom(selected_product)
-            
-            if not bom.empty:
-                can_produce = True
+            if not out_transfers.empty:
+                display_transfers = out_transfers[['date_time', 'item_name', 'quantity', 'unit', 
+                                                 'from_branch_name', 'to_branch_name', 'reference', 'user_id']]
+                display_transfers.columns = ['Date', 'Item', 'Qty', 'Unit', 'From', 'To', 'Reference', 'User']
+                display_transfers['Date'] = pd.to_datetime(display_transfers['Date']).dt.strftime('%m-%d %H:%M')
                 
-                for _, row in bom.iterrows():
-                    required_qty = row['quantity_required'] * quantity_to_produce
-                    available_qty = row['current_stock']
-                    
-                    if available_qty >= required_qty:
-                        status = "✅"
-                    else:
-                        status = "❌"
-                        can_produce = False
-                    
-                    st.write(f"{status} {row['ingredient_name']}: {required_qty} (Have: {available_qty})")
-                
-                if can_produce:
-                    st.success("✅ Can produce")
-                else:
-                    st.error("❌ Insufficient ingredients")
+                st.dataframe(display_transfers, use_container_width=True, height=400)
             else:
-                st.warning("No BOM found")
+                st.info("No transfers found.")
+        else:
+            st.info("No transfer history available.")
+
+def show_production_center():
+    """Enhanced production center with branch selection"""
+    if not check_permission('warehouse_manager'):
+        st.error("❌ Access denied.")
+        return
+    
+    st.header("🏭 Production Center")
+    
+    branches_df = get_all_branches()
+    
+    # Branch selection for production
+    selected_branch_id = st.selectbox(
+        "🏪 Production Branch",
+        options=branches_df['id'].tolist(),
+        format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+    )
+    
+    if selected_branch_id:
+        branch_info = branches_df[branches_df['id'] == selected_branch_id].iloc[0]
+        st.info(f"🏭 Production at: **{branch_info['branch_name']}** - {branch_info['location']}")
+        
+        items_df = get_all_items(branch_id=selected_branch_id)
+        final_products = items_df[items_df['category'] == 'Final Product']
+        
+        if final_products.empty:
+            st.warning("No final products found in this branch.")
+            return
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected_product = st.selectbox("Product",
+                                          options=final_products['id'].tolist(),
+                                          format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}")
+            
+            quantity_to_produce = st.number_input("Quantity", min_value=1, value=1)
+            
+            if st.button("🚀 Start Production", type="primary"):
+                if selected_product and quantity_to_produce > 0:
+                    # For now, just add to final product stock (BOM functionality would need to be updated for branches)
+                    update_stock(selected_product, selected_branch_id, quantity_to_produce, 'PRODUCTION', 
+                               f'Produced {quantity_to_produce} units', '', st.session_state.username)
+                    st.success(f"✅ Produced {quantity_to_produce} units!")
+                    st.rerun()
+        
+        with col2:
+            if selected_product:
+                product_info = final_products[final_products['id'] == selected_product].iloc[0]
+                st.subheader("📦 Product Info")
+                st.write(f"**Current Stock:** {product_info['current_stock']} {product_info['unit']}")
+                st.write(f"**Min Stock:** {product_info['min_stock']} {product_info['unit']}")
 
 def show_item_management():
-    """Item management interface"""
+    """Enhanced item management with branch support"""
     if not check_permission('warehouse_manager'):
         st.error("❌ Access denied.")
         return
     
     st.header("⚙️ Item Management")
     
-    tab1, tab2 = st.tabs(["➕ Add Item", "📋 View & Delete Items"])
+    branches_df = get_all_branches()
+    
+    tab1, tab2 = st.tabs(["➕ Add Item", "📋 View & Manage Items"])
     
     with tab1:
         st.subheader("Add New Item")
         
-        item_id = st.text_input("Item ID", value=str(uuid.uuid4())[:8].upper())
-        name = st.text_input("Item Name")
-        category = st.selectbox("Category", ["Raw Material", "Pre-Final", "Final Product"])
-        unit = st.selectbox("Unit", ["kg", "g", "L", "ml", "pieces", "units"])
-        current_stock = st.number_input("Current Stock", min_value=0.0, value=0.0)
-        min_stock = st.number_input("Min Stock", min_value=0.0, value=0.0)
-        
-        if st.button("➕ Add Item", type="primary"):
-            if name and item_id:
-                add_item(item_id, name, category, unit, current_stock, min_stock, 0, "Main", "General", st.session_state.username)
-                st.success(f"✅ Added {name}!")
-                st.rerun()
-            else:
-                st.error("❌ Please fill Item ID and Name")
+        with st.form("add_item_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                branch_id = st.selectbox(
+                    "🏪 Branch",
+                    options=branches_df['id'].tolist(),
+                    format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+                )
+                item_id = st.text_input("Item ID", value=str(uuid.uuid4())[:8].upper())
+                name = st.text_input("Item Name")
+                category = st.selectbox("Category", ["Raw Material", "Pre-Final", "Final Product"])
+            
+            with col2:
+                unit = st.selectbox("Unit", ["kg", "g", "L", "ml", "pieces", "units"])
+                current_stock = st.number_input("Current Stock", min_value=0.0, value=0.0)
+                min_stock = st.number_input("Min Stock", min_value=0.0, value=0.0)
+            
+            submitted = st.form_submit_button("➕ Add Item", type="primary")
+            
+            if submitted:
+                if name and item_id and branch_id:
+                    add_item(item_id, name, category, unit, current_stock, min_stock, 0, "Main", "General", branch_id, st.session_state.username)
+                    branch_name = branches_df[branches_df['id'] == branch_id]['branch_name'].iloc[0]
+                    st.success(f"✅ Added {name} to {branch_name}!")
+                    st.rerun()
+                else:
+                    st.error("❌ Please fill all required fields")
     
     with tab2:
         st.subheader("📋 All Items")
-        items_df = get_all_items()
+        
+        # Branch filter
+        branch_filter = st.selectbox(
+            "🏪 Filter by Branch",
+            options=["All Branches"] + branches_df['branch_name'].tolist()
+        )
+        
+        if branch_filter == "All Branches":
+            items_df = get_all_items()
+        else:
+            branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
+            items_df = get_all_items(branch_id=branch_id)
         
         if not items_df.empty:
-            # Filter
+            # Category filter
             category_filter = st.selectbox("Filter by Category", 
                                          ["All", "Raw Material", "Pre-Final", "Final Product"])
             
@@ -1022,255 +1755,103 @@ def show_item_management():
             
             filtered_items['Status'] = filtered_items.apply(get_status, axis=1)
             
-            display_df = filtered_items[['id', 'name', 'category', 'current_stock', 'min_stock', 'unit', 'Status']]
-            display_df.columns = ['ID', 'Name', 'Category', 'Stock', 'Min', 'Unit', 'Status']
+            display_df = filtered_items[['branch_name', 'id', 'name', 'category', 'current_stock', 'min_stock', 'unit', 'Status']]
+            display_df.columns = ['Branch', 'ID', 'Name', 'Category', 'Stock', 'Min', 'Unit', 'Status']
             
-            st.dataframe(display_df, use_container_width=True, height=300)
-            
-            # DELETE SECTION - Very visible
-            st.markdown("---")
-            st.subheader("🗑️ DELETE ITEM")
-            st.warning("⚠️ **DANGER ZONE** - Item deletion cannot be undone!")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if not filtered_items.empty:
-                    item_to_delete = st.selectbox("🗑️ Select Item to DELETE", 
-                                                options=[""] + filtered_items['id'].tolist(),
-                                                format_func=lambda x: f"SELECT ITEM TO DELETE" if x == "" else f"DELETE: {x} - {filtered_items[filtered_items['id']==x]['name'].iloc[0]}")
-                    
-                    if item_to_delete and item_to_delete != "":
-                        item_info = filtered_items[filtered_items['id'] == item_to_delete].iloc[0]
-                        
-                        st.error(f"""
-                        **⚠️ ITEM TO BE DELETED:**
-                        - **ID:** {item_info['id']}
-                        - **Name:** {item_info['name']}
-                        - **Category:** {item_info['category']}
-                        - **Stock:** {item_info['current_stock']} {item_info['unit']}
-                        """)
-                        
-                        # Check BOM usage
-                        conn = sqlite3.connect('inventory.db')
-                        bom_check = pd.read_sql_query("""
-                            SELECT COUNT(*) as count FROM bom 
-                            WHERE ingredient_id = ? OR final_product_id = ?
-                        """, conn, params=[item_to_delete, item_to_delete])
-                        conn.close()
-                        
-                        if bom_check.iloc[0]['count'] > 0:
-                            st.warning("⚠️ This item is used in Bill of Materials!")
-            
-            with col2:
-                if item_to_delete and item_to_delete != "":
-                    st.write("**Deletion Controls:**")
-                    
-                    if st.button("🗑️ DELETE THIS ITEM", type="secondary", use_container_width=True):
-                        if st.session_state.get('confirm_delete_item') == item_to_delete:
-                            # DELETE THE ITEM
-                            conn = sqlite3.connect('inventory.db')
-                            c = conn.cursor()
-                            
-                            # Delete from all tables
-                            c.execute('DELETE FROM items WHERE id = ?', (item_to_delete,))
-                            c.execute('DELETE FROM bom WHERE final_product_id = ? OR ingredient_id = ?', 
-                                     (item_to_delete, item_to_delete))
-                            c.execute('DELETE FROM stock_movements WHERE item_id = ?', (item_to_delete,))
-                            
-                            conn.commit()
-                            conn.close()
-                            
-                            st.success(f"🗑️ DELETED '{item_info['name']}' successfully!")
-                            if 'confirm_delete_item' in st.session_state:
-                                del st.session_state['confirm_delete_item']
-                            st.rerun()
-                        else:
-                            st.session_state['confirm_delete_item'] = item_to_delete
-                            st.error("⚠️ CLICK DELETE AGAIN TO CONFIRM!")
-                    
-                    if st.button("❌ Cancel Deletion", use_container_width=True):
-                        if 'confirm_delete_item' in st.session_state:
-                            del st.session_state['confirm_delete_item']
-                        st.rerun()
-                    
-                    if item_info['current_stock'] > 0:
-                        if st.button(f"📉 Clear Stock ({item_info['current_stock']} {item_info['unit']})", use_container_width=True):
-                            update_stock(item_to_delete, item_info['current_stock'], 'OUT', 
-                                       'Stock cleared for deletion', '', st.session_state.username)
-                            st.success("Stock cleared to zero!")
-                            st.rerun()
-        else:
-            st.info("No items found.")
-        
-        # Quick stats
-        if not items_df.empty:
-            st.markdown("---")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Items", len(items_df))
-            
-            with col2:
-                active_items = len(items_df[items_df['current_stock'] > 0])
-                st.metric("Active Items", active_items)
-            
-            with col3:
-                low_stock_items = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
-                st.metric("Low Stock", low_stock_items)
-            
-            with col4:
-                zero_stock_items = len(items_df[items_df['current_stock'] <= 0])
-                st.metric("Zero Stock", zero_stock_items)
-
-def show_bom_management():
-    """Bill of Materials management"""
-    if not check_permission('warehouse_manager'):
-        st.error("❌ Access denied.")
-        return
-    
-    st.header("🧾 Bill of Materials")
-    
-    items_df = get_all_items()
-    if items_df.empty:
-        st.warning("Add items first.")
-        return
-    
-    final_products = items_df[items_df['category'] == 'Final Product']
-    if final_products.empty:
-        st.warning("Add final products first.")
-        return
-    
-    selected_product = st.selectbox("Product",
-                                  options=final_products['id'].tolist(),
-                                  format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}")
-    
-    if selected_product:
-        # Show existing BOM
-        existing_bom = get_bom(selected_product)
-        if not existing_bom.empty:
-            st.write("**Current BOM:**")
-            display_bom = existing_bom[['ingredient_name', 'quantity_required', 'unit']]
-            st.dataframe(display_bom, use_container_width=True)
-        
-        # Add ingredient
-        st.subheader("Add Ingredient")
-        
-        available_ingredients = items_df[items_df['category'].isin(['Raw Material', 'Pre-Final'])]
-        ingredient = st.selectbox("Ingredient",
-                                options=available_ingredients['id'].tolist(),
-                                format_func=lambda x: f"{available_ingredients[available_ingredients['id']==x]['name'].iloc[0]}")
-        
-        quantity_required = st.number_input("Quantity Required", min_value=0.001, value=1.0)
-        
-        if st.button("Add to BOM"):
-            add_bom_item(selected_product, ingredient, quantity_required)
-            st.success("Added to BOM!")
-            st.rerun()
-
-def show_warehouse_areas():
-    """Warehouse areas management"""
-    if not check_permission('warehouse_manager'):
-        st.error("❌ Access denied.")
-        return
-    
-    st.header("🏪 Warehouse Areas")
-    
-    areas_df = get_warehouse_areas()
-    items_df = get_all_items()
-    
-    for _, area in areas_df.iterrows():
-        area_items = items_df[items_df['warehouse_area'] == area['area_name']]
-        
-        with st.expander(f"📦 {area['area_name']} ({len(area_items)} items)"):
-            if not area_items.empty:
-                for _, item in area_items.iterrows():
-                    status = "✅" if item['current_stock'] > item['min_stock'] else "⚠️" if item['current_stock'] > 0 else "❌"
-                    st.write(f"{status} {item['name']}: {item['current_stock']} {item['unit']}")
+            st.dataframe(display_df, use_container_width=True, height=400)
 
 def show_reports():
-    """Reports and analytics"""
-    st.header("📋 Reports")
+    """Enhanced reports with branch breakdown"""
+    st.header("📋 Reports & Analytics")
     
+    branches_df = get_all_branches()
     items_df = get_all_items()
+    
     if items_df.empty:
         st.info("No data available.")
         return
     
-    # Stock summary
-    summary_stats = items_df.groupby('category').agg({
-        'current_stock': 'sum',
-        'name': 'count'
-    }).rename(columns={'name': 'items'})
-    
-    st.dataframe(summary_stats, use_container_width=True)
-    
-    # Low stock
-    low_stock = items_df[items_df['current_stock'] <= items_df['min_stock']]
-    if not low_stock.empty:
-        st.subheader("⚠️ Low Stock")
-        display_low = low_stock[['name', 'current_stock', 'min_stock', 'unit']]
-        st.dataframe(display_low, use_container_width=True)
-
-def show_excel_integration():
-    """Excel import/export functionality"""
-    if not check_permission('warehouse_manager'):
-        st.error("❌ Access denied.")
-        return
-    
-    st.header("💾 Excel")
-    
-    tab1, tab2 = st.tabs(["Export", "Import"])
+    tab1, tab2, tab3 = st.tabs(["📊 Overview", "🏪 By Branch", "📈 Movements"])
     
     with tab1:
-        st.subheader("Export Data")
+        st.subheader("📊 System Overview")
         
-        if st.button("🔄 Generate Excel File"):
-            items_df = get_all_items()
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                items_df.to_excel(writer, sheet_name='ALL_ITEMS', index=False)
-            
-            st.download_button(
-                label="📥 Download Excel",
-                data=output.getvalue(),
-                file_name=f"inventory_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        # High-level metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Branches", len(branches_df))
+        
+        with col2:
+            st.metric("Total Items", len(items_df))
+        
+        with col3:
+            in_stock = len(items_df[items_df['current_stock'] > 0])
+            st.metric("Items In Stock", in_stock)
+        
+        with col4:
+            critical = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Critical Items", critical)
+        
+        # Category breakdown
+        st.subheader("📦 By Category")
+        category_summary = items_df.groupby('category').agg({
+            'current_stock': 'sum',
+            'name': 'count'
+        }).rename(columns={'name': 'items', 'current_stock': 'total_stock'})
+        
+        st.dataframe(category_summary, use_container_width=True)
     
     with tab2:
-        st.subheader("Import Data")
-        st.write("Upload Excel file to import items")
+        st.subheader("🏪 Branch Breakdown")
         
-        uploaded_file = st.file_uploader("Excel file", type=['xlsx', 'xls'])
+        branch_summary = []
+        for _, branch in branches_df.iterrows():
+            branch_items = items_df[items_df['branch_id'] == branch['id']]
+            if not branch_items.empty:
+                total_items = len(branch_items)
+                in_stock = len(branch_items[branch_items['current_stock'] > 0])
+                critical = len(branch_items[branch_items['current_stock'] <= 0])
+                
+                branch_summary.append({
+                    'Branch': branch['branch_name'],
+                    'Location': branch['location'],
+                    'Total Items': total_items,
+                    'In Stock': in_stock,
+                    'Critical': critical,
+                    'Performance': f"{(in_stock/total_items*100):.1f}%" if total_items > 0 else "0%"
+                })
         
-        if uploaded_file is not None:
-            if st.button("📤 Import"):
-                try:
-                    df = pd.read_excel(uploaded_file)
-                    
-                    for _, row in df.iterrows():
-                        item_id = str(uuid.uuid4())[:8].upper()
-                        add_item(
-                            item_id,
-                            row.get('name', ''),
-                            row.get('category', 'Raw Material'),
-                            row.get('unit', 'pieces'),
-                            row.get('current_stock', 0),
-                            row.get('min_stock', 0),
-                            0, "Main", "General",
-                            st.session_state.username
-                        )
-                    
-                    st.success(f"Imported {len(df)} items!")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Import failed: {str(e)}")
+        if branch_summary:
+            summary_df = pd.DataFrame(branch_summary)
+            st.dataframe(summary_df, use_container_width=True)
+    
+    with tab3:
+        st.subheader("📈 Recent Stock Movements")
+        
+        conn = sqlite3.connect('inventory.db')
+        movements_df = pd.read_sql_query('''
+            SELECT sm.*, i.name as item_name, i.unit, b.branch_name
+            FROM stock_movements sm
+            JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+            JOIN branches b ON sm.branch_id = b.id
+            ORDER BY sm.date_time DESC 
+            LIMIT 100
+        ''', conn)
+        conn.close()
+        
+        if not movements_df.empty:
+            movements_df['date_time'] = pd.to_datetime(movements_df['date_time']).dt.strftime('%m-%d %H:%M')
+            
+            display_df = movements_df[['date_time', 'branch_name', 'item_name', 'movement_type', 'quantity', 'unit', 'user_id']]
+            display_df.columns = ['Date', 'Branch', 'Item', 'Type', 'Qty', 'Unit', 'User']
+            
+            st.dataframe(display_df, use_container_width=True, height=400)
+        else:
+            st.info("No movements found.")
 
 def show_user_management():
-    """User management interface"""
+    """Enhanced user management"""
     if not check_permission('warehouse_manager'):
         st.error("❌ Access denied.")
         return
@@ -1289,7 +1870,8 @@ def show_user_management():
         role_icons = {
             "warehouse_manager": "👨‍💼",
             "boss": "👔", 
-            "viewer": "👁️"
+            "viewer": "👁️",
+            "admin": "🔧"
         }
         
         users_df['Role'] = users_df['role'].map(lambda x: f"{role_icons.get(x, '👤')} {x.replace('_', ' ').title()}")
@@ -1300,7 +1882,7 @@ def show_user_management():
         st.dataframe(display_df, use_container_width=True)
     
     # Tab layout for mobile
-    tab1, tab2, tab3 = st.tabs(["➕ Add User", "🗑️ Delete User", "🔒 Reset Password"])
+    tab1, tab2 = st.tabs(["➕ Add User", "🔒 Manage Users"])
     
     with tab1:
         st.subheader("Add New User")
@@ -1314,12 +1896,13 @@ def show_user_management():
                 new_full_name = st.text_input("Full Name", placeholder="e.g., John Smith")
             
             with col2:
-                new_role = st.selectbox("Access Level", ["viewer", "boss", "warehouse_manager"])
+                new_role = st.selectbox("Access Level", ["viewer", "admin", "boss", "warehouse_manager"])
                 
                 role_info = {
-                    "viewer": "👁️ **Viewer**: Can only see final products. Perfect for sales staff.",
-                    "boss": "👔 **Boss**: Can view all inventory but cannot change stock levels.",
-                    "warehouse_manager": "👨‍💼 **Manager**: Full access to everything including user management."
+                    "viewer": "👁️ **Viewer**: Can only see final products by branch (no quantities).",
+                    "admin": "🔧 **Admin**: Can update final product stock levels only.",
+                    "boss": "👔 **Boss**: Can view all inventory across branches (read-only).",
+                    "warehouse_manager": "👨‍💼 **Manager**: Full access including branch management."
                 }
                 
                 st.info(role_info[new_role])
@@ -1357,100 +1940,67 @@ def show_user_management():
                     st.error("❌ Please fill in all fields!")
     
     with tab2:
-        st.subheader("🗑️ Delete User")
+        st.subheader("🔒 Manage Existing Users")
         
         if not users_df.empty:
-            # Don't allow deleting yourself
-            other_users = users_df[users_df['username'] != st.session_state.username]
+            # User management options
+            selected_user = st.selectbox(
+                "Select User to Manage",
+                options=[""] + [u for u in users_df['username'].tolist() if u != st.session_state.username],
+                format_func=lambda x: "Select a user..." if x == "" else f"{x} - {users_df[users_df['username']==x]['full_name'].iloc[0] if x else ''}"
+            )
             
-            if not other_users.empty:
-                user_to_delete = st.selectbox("Select user to delete", 
-                                            options=other_users['username'].tolist(),
-                                            format_func=lambda x: f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0]} ({other_users[other_users['username']==x]['role'].iloc[0]})")
+            if selected_user:
+                user_info = users_df[users_df['username'] == selected_user].iloc[0]
                 
-                if user_to_delete:
-                    user_info = other_users[other_users['username'] == user_to_delete].iloc[0]
-                    
-                    st.warning(f"⚠️ **Are you sure you want to delete:**\n\n"
-                              f"**Username:** {user_info['username']}\n"
-                              f"**Name:** {user_info['full_name']}\n"
-                              f"**Role:** {user_info['role']}")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if st.button("🗑️ DELETE USER", type="secondary", use_container_width=True):
-                            if st.session_state.get('confirm_delete_user') == user_to_delete:
-                                # Delete user
-                                conn = sqlite3.connect('inventory.db')
-                                c = conn.cursor()
-                                c.execute('DELETE FROM users WHERE username = ?', (user_to_delete,))
-                                conn.commit()
-                                conn.close()
-                                
-                                st.success(f"🗑️ User '{user_to_delete}' deleted successfully!")
-                                if 'confirm_delete_user' in st.session_state:
-                                    del st.session_state['confirm_delete_user']
-                                st.rerun()
-                            else:
-                                st.session_state['confirm_delete_user'] = user_to_delete
-                                st.error("⚠️ Click DELETE USER again to confirm deletion!")
-                    
-                    with col2:
-                        if st.button("❌ Cancel", use_container_width=True):
-                            if 'confirm_delete_user' in st.session_state:
-                                del st.session_state['confirm_delete_user']
-                            st.rerun()
-            else:
-                st.info("You are the only user in the system.")
-        else:
-            st.info("No users found.")
-    
-    with tab3:
-        st.subheader("🔒 Reset Password")
-        
-        if not users_df.empty:
-            other_users = users_df[users_df['username'] != st.session_state.username]
-            
-            if not other_users.empty:
-                user_to_reset = st.selectbox("Select user for password reset", 
-                                           options=other_users['username'].tolist(),
-                                           format_func=lambda x: f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0]}")
+                col1, col2 = st.columns(2)
                 
-                new_temp_password = st.text_input("New password", type="password", placeholder="New password for user")
+                with col1:
+                    st.write(f"**Username:** {user_info['username']}")
+                    st.write(f"**Name:** {user_info['full_name']}")
+                    st.write(f"**Role:** {user_info['Role']}")
                 
-                if st.button("🔒 Reset Password", type="primary"):
-                    if new_temp_password and len(new_temp_password) >= 6:
+                with col2:
+                    # Reset password
+                    new_password = st.text_input("New Password", type="password", placeholder="Leave empty to skip")
+                    
+                    if st.button("🔒 Reset Password"):
+                        if new_password and len(new_password) >= 6:
+                            conn = sqlite3.connect('inventory.db')
+                            c = conn.cursor()
+                            
+                            password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                            c.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
+                                     (password_hash, selected_user))
+                            conn.commit()
+                            conn.close()
+                            
+                            st.success(f"🔒 Password reset for '{selected_user}'!")
+                            st.info(f"**New login details:**\nUsername: `{selected_user}`\nPassword: `{new_password}`")
+                        else:
+                            st.error("❌ Password must be at least 6 characters!")
+                
+                # Delete user
+                st.markdown("---")
+                st.subheader("🗑️ Delete User")
+                st.warning(f"⚠️ **Delete user:** {selected_user}")
+                
+                if st.button("🗑️ DELETE USER", type="secondary"):
+                    if st.session_state.get('confirm_delete_user') == selected_user:
+                        # Delete user
                         conn = sqlite3.connect('inventory.db')
                         c = conn.cursor()
-                        
-                        password_hash = hashlib.sha256(new_temp_password.encode()).hexdigest()
-                        c.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
-                                 (password_hash, user_to_reset))
+                        c.execute('DELETE FROM users WHERE username = ?', (selected_user,))
                         conn.commit()
                         conn.close()
                         
-                        st.success(f"🔒 Password reset for '{user_to_reset}'!")
-                        st.info(f"**New login details:**\nUsername: `{user_to_reset}`\nPassword: `{new_temp_password}`")
+                        st.success(f"🗑️ User '{selected_user}' deleted successfully!")
+                        if 'confirm_delete_user' in st.session_state:
+                            del st.session_state['confirm_delete_user']
+                        st.rerun()
                     else:
-                        st.error("❌ Password must be at least 6 characters!")
-            else:
-                st.info("No other users to reset passwords for.")
-    
-    # Security tips
-    with st.expander("🛡️ Security Tips"):
-        st.markdown("""
-        ### 🔐 User Management Best Practices:
-        - ✅ **Use strong passwords** (at least 8 characters)
-        - ✅ **Remove users** who no longer need access
-        - ✅ **Review user roles** regularly
-        - ✅ **Change default passwords** immediately
-        
-        ### 👥 Role Guidelines:
-        - **👁️ Viewer**: Sales staff, drivers, general employees
-        - **👔 Boss**: Management, supervisors (view-only access)
-        - **👨‍💼 Manager**: Warehouse staff, inventory controllers
-        """)
+                        st.session_state['confirm_delete_user'] = selected_user
+                        st.error("⚠️ Click DELETE USER again to confirm deletion!")
 
 if __name__ == "__main__":
     main()
