@@ -602,8 +602,16 @@ def show_admin_dashboard():
         st.info("No final products found")
 
 def show_admin_update():
-    """Admin: Update final product stock"""
+    """Admin: Update final product stock with clear explanations"""
     st.header("🔄 Update Final Product Stock")
+    
+    # Add explanation of operations
+    st.info("""
+    📝 **Stock Update Operations:**
+    - **SET**: Sets exact stock level (e.g., SET 50 = stock becomes exactly 50)
+    - **ADD**: Increases current stock (e.g., ADD 10 = adds 10 to current stock)  
+    - **SUBTRACT**: Decreases current stock (e.g., SUBTRACT 5 = removes 5 from current stock)
+    """)
     
     branches_df = get_all_branches()
     
@@ -621,7 +629,7 @@ def show_admin_update():
             # Current stock display
             st.subheader("📦 Current Stock")
             display_df = items_df[['name', 'current_stock', 'unit']].copy()
-            display_df.columns = ['Product', 'Stock', 'Unit']
+            display_df.columns = ['Product', 'Current Stock', 'Unit']
             st.dataframe(display_df, use_container_width=True)
             
             # Update form
@@ -634,11 +642,23 @@ def show_admin_update():
                     selected_item = st.selectbox(
                         "Product",
                         options=items_df['id'].tolist(),
-                        format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]}"
+                        format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]} (Current: {items_df[items_df['id']==x]['current_stock'].iloc[0]})"
                     )
                     
                     update_type = st.selectbox("Operation", ["SET", "ADD", "SUBTRACT"])
                     quantity = st.number_input("Quantity", min_value=0.0, value=0.0)
+                    
+                    # Show preview of operation
+                    if selected_item:
+                        current_stock = items_df[items_df['id'] == selected_item]['current_stock'].iloc[0]
+                        if update_type == "SET":
+                            st.info(f"📊 Result: Stock will be set to **{quantity}**")
+                        elif update_type == "ADD":
+                            new_stock = current_stock + quantity
+                            st.info(f"📊 Result: {current_stock} + {quantity} = **{new_stock}**")
+                        elif update_type == "SUBTRACT":
+                            new_stock = max(0, current_stock - quantity)
+                            st.info(f"📊 Result: {current_stock} - {quantity} = **{new_stock}**")
                 
                 with col2:
                     reference = st.text_input("Reference", placeholder="Reason for update")
@@ -654,35 +674,42 @@ def show_admin_update():
                         # Set absolute value
                         conn = sqlite3.connect('inventory.db')
                         c = conn.cursor()
+                        old_stock = current_item['current_stock']
                         c.execute("UPDATE items SET current_stock = ? WHERE id = ? AND branch_id = ?", 
                                  (quantity, selected_item, selected_branch_id))
                         
                         c.execute('''INSERT INTO stock_movements (item_id, branch_id, movement_type, quantity, reference, batch_nr, invoice_nr, date_time, user_id)
                                      VALUES (?, ?, 'ADMIN_SET', ?, ?, ?, ?, ?, ?)''',
-                                  (selected_item, selected_branch_id, quantity, f"SET to {quantity} - {reference}", 
+                                  (selected_item, selected_branch_id, quantity, f"SET from {old_stock} to {quantity} - {reference}", 
                                    batch_nr, invoice_nr, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.username))
                         
                         conn.commit()
                         conn.close()
                         
-                        st.success(f"✅ Set {current_item['name']} to {quantity} {current_item['unit']}")
+                        st.success(f"✅ Set {current_item['name']} from {old_stock} to {quantity} {current_item['unit']}")
                         st.rerun()
                     
                     elif update_type == "ADD":
                         if quantity > 0:
                             update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_IN', 
                                         f"Added {quantity} - {reference}", batch_nr, invoice_nr, "", st.session_state.username)
-                            st.success(f"✅ Added {quantity} {current_item['unit']}")
+                            new_stock = current_item['current_stock'] + quantity
+                            st.success(f"✅ Added {quantity} {current_item['unit']} (New total: {new_stock})")
                             st.rerun()
+                        else:
+                            st.error("❌ Quantity must be greater than 0 for ADD")
                     
                     elif update_type == "SUBTRACT":
                         if quantity > 0 and current_item['current_stock'] >= quantity:
                             update_stock(selected_item, selected_branch_id, quantity, 'ADMIN_OUT', 
                                         f"Subtracted {quantity} - {reference}", batch_nr, invoice_nr, "", st.session_state.username)
-                            st.success(f"✅ Subtracted {quantity} {current_item['unit']}")
+                            new_stock = current_item['current_stock'] - quantity
+                            st.success(f"✅ Subtracted {quantity} {current_item['unit']} (New total: {new_stock})")
                             st.rerun()
+                        elif quantity <= 0:
+                            st.error("❌ Quantity must be greater than 0 for SUBTRACT")
                         else:
-                            st.error("❌ Insufficient stock or invalid quantity")
+                            st.error(f"❌ Cannot subtract {quantity}. Only {current_item['current_stock']} available")
         else:
             st.info("No final products in this branch")
 
@@ -757,7 +784,7 @@ def show_admin_transfer():
             st.warning("No final products with stock in source branch")
 
 def show_admin_movements():
-    """Admin: View movements with batch tracking"""
+    """Admin: View movements with proper filtering"""
     st.header("📈 Stock Movements")
     
     # Filters
@@ -773,32 +800,35 @@ def show_admin_movements():
     with col2:
         user_filter = st.selectbox(
             "👤 User",
-            options=["All", "My Actions", "Admin Actions"]
+            options=["All", "My Actions", "Manager Actions"]
         )
     
-    # Get movements
+    # Get movements with proper filtering
     conn = sqlite3.connect('inventory.db')
     
     query = '''
         SELECT sm.*, i.name as item_name, i.unit, b.branch_name
         FROM stock_movements sm
-        JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+        JOIN items i ON sm.item_id = i.id 
         JOIN branches b ON sm.branch_id = b.id
         WHERE i.category = 'Final Product'
+        AND EXISTS (SELECT 1 FROM items i2 WHERE i2.id = sm.item_id AND i2.branch_id = sm.branch_id)
     '''
     
     params = []
     
+    # Branch filtering
     if branch_filter != "All":
         branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
         query += " AND sm.branch_id = ?"
         params.append(branch_id)
     
+    # User filtering - Admin sees their actions and manager actions
     if user_filter == "My Actions":
         query += " AND sm.user_id = ?"
         params.append(st.session_state.username)
-    elif user_filter == "Admin Actions":
-        query += " AND sm.user_id = 'admin'"
+    elif user_filter == "Manager Actions":
+        query += " AND sm.user_id LIKE '%manager%'"
     
     query += " ORDER BY sm.date_time DESC LIMIT 100"
     
@@ -806,6 +836,8 @@ def show_admin_movements():
     conn.close()
     
     if not movements_df.empty:
+        st.info(f"📊 Found {len(movements_df)} movements")
+        
         # Display movements
         display_data = []
         
@@ -818,11 +850,24 @@ def show_admin_movements():
             
             tracking = " | ".join(tracking_info) if tracking_info else "-"
             
+            # Format movement type
+            movement_type = row['movement_type']
+            if movement_type == 'ADMIN_SET':
+                movement_type = 'SET Stock'
+            elif movement_type == 'ADMIN_IN':
+                movement_type = 'ADD Stock'
+            elif movement_type == 'ADMIN_OUT':
+                movement_type = 'SUBTRACT Stock'
+            elif movement_type == 'TRANSFER_OUT':
+                movement_type = 'Transfer Out'
+            elif movement_type == 'TRANSFER_IN':
+                movement_type = 'Transfer In'
+            
             display_data.append({
                 'Date': row['date_time'][:16],
                 'Branch': row['branch_name'],
                 'Product': row['item_name'],
-                'Type': row['movement_type'],
+                'Type': movement_type,
                 'Quantity': f"{row['quantity']} {row['unit']}",
                 'Tracking': tracking,
                 'Reference': row['reference'] or '-',
@@ -832,8 +877,24 @@ def show_admin_movements():
         if display_data:
             movements_display_df = pd.DataFrame(display_data)
             st.dataframe(movements_display_df, use_container_width=True, height=400)
+            
+            # Summary
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Movements", len(movements_df))
+            
+            with col2:
+                my_actions = len(movements_df[movements_df['user_id'] == st.session_state.username])
+                st.metric("My Actions", my_actions)
+            
+            with col3:
+                manager_actions = len(movements_df[movements_df['user_id'].str.contains('manager', case=False)])
+                st.metric("Manager Actions", manager_actions)
     else:
-        st.info("No movements found")
+        st.info("No movements found with selected filters")
+        if branch_filter != "All":
+            st.info(f"💡 Try selecting 'All' branches or check if there are any final products in {branch_filter}")
 
 # ===============================
 # BOSS PAGES (READ-ONLY)
@@ -1218,7 +1279,7 @@ def show_manager_branches():
                     st.error(f"❌ Error: {str(e)}")
 
 def show_manager_stock():
-    """Manager: Stock management"""
+    """Manager: Stock management with proper movement tracking"""
     st.header("📦 Stock Management")
     
     branches_df = get_all_branches()
@@ -1231,6 +1292,9 @@ def show_manager_stock():
     )
     
     if selected_branch_id:
+        branch_name = branches_df[branches_df['id'] == selected_branch_id]['branch_name'].iloc[0]
+        st.info(f"📍 Managing stock for: **{branch_name}**")
+        
         items_df = get_items_by_role("warehouse_manager", selected_branch_id)
         
         # Category filter
@@ -1251,13 +1315,13 @@ def show_manager_stock():
             
             items_df['Status'] = items_df.apply(get_status, axis=1)
             
-            display_df = items_df[['id', 'name', 'current_stock', 'unit', 'Status']]
-            display_df.columns = ['ID', 'Name', 'Stock', 'Unit', 'Status']
+            display_df = items_df[['id', 'name', 'category', 'current_stock', 'unit', 'Status']]
+            display_df.columns = ['ID', 'Name', 'Category', 'Stock', 'Unit', 'Status']
             
             st.dataframe(display_df, use_container_width=True, height=300)
             
-            # Quick update
-            st.subheader("⚡ Quick Update")
+            # Quick update with better tracking
+            st.subheader("⚡ Quick Stock Update")
             
             with st.form("quick_update_form"):
                 col1, col2 = st.columns(2)
@@ -1266,22 +1330,63 @@ def show_manager_stock():
                     selected_item = st.selectbox(
                         "Item",
                         options=items_df['id'].tolist(),
-                        format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]}"
+                        format_func=lambda x: f"{items_df[items_df['id']==x]['name'].iloc[0]} (Current: {items_df[items_df['id']==x]['current_stock'].iloc[0]})"
                     )
                     quantity = st.number_input("Quantity", value=0.0)
                     movement_type = st.selectbox("Type", ["IN", "OUT"])
                 
                 with col2:
-                    reference = st.text_input("Reference")
-                    batch_nr = st.text_input("Batch Number")
+                    reference = st.text_input("Reference", placeholder="Delivery, sale, adjustment, etc.")
+                    batch_nr = st.text_input("Batch Number", placeholder="Optional")
+                    invoice_nr = st.text_input("Invoice Number", placeholder="Optional")
                 
-                submitted = st.form_submit_button("💾 Update", type="primary")
+                submitted = st.form_submit_button("💾 Update Stock", type="primary")
                 
                 if submitted and selected_item and quantity != 0:
-                    update_stock(selected_item, selected_branch_id, abs(quantity), movement_type, 
-                               reference, batch_nr, "", "", st.session_state.username)
-                    st.success("✅ Stock updated!")
-                    st.rerun()
+                    try:
+                        # Get current item info for feedback
+                        current_item = items_df[items_df['id'] == selected_item].iloc[0]
+                        old_stock = current_item['current_stock']
+                        
+                        # Update stock with enhanced tracking
+                        update_stock(selected_item, selected_branch_id, abs(quantity), movement_type, 
+                                   reference, batch_nr, invoice_nr, "", st.session_state.username)
+                        
+                        # Calculate new stock for feedback
+                        if movement_type == "IN":
+                            new_stock = old_stock + abs(quantity)
+                            st.success(f"✅ Added {abs(quantity)} {current_item['unit']} to {current_item['name']} (New total: {new_stock})")
+                        else:
+                            new_stock = max(0, old_stock - abs(quantity))
+                            st.success(f"✅ Removed {abs(quantity)} {current_item['unit']} from {current_item['name']} (New total: {new_stock})")
+                        
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error updating stock: {str(e)}")
+                elif submitted:
+                    st.error("❌ Please select an item and enter a non-zero quantity")
+            
+            # Summary stats
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Items", len(items_df))
+            
+            with col2:
+                in_stock = len(items_df[items_df['current_stock'] > 0])
+                st.metric("In Stock", in_stock)
+            
+            with col3:
+                low_stock = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
+                st.metric("Low Stock", low_stock)
+            
+            with col4:
+                out_of_stock = len(items_df[items_df['current_stock'] <= 0])
+                st.metric("Out of Stock", out_of_stock)
+        else:
+            st.warning(f"No items found in {branch_name} for the selected category.")
+            st.info("💡 Add items using the 'Items' section or transfer from other branches.")
 
 def show_manager_transfers():
     """Manager: Stock transfers"""
@@ -1422,10 +1527,10 @@ def show_manager_production():
                     st.write(f"**Min Stock:** {product_info['min_stock']} {product_info['unit']}")
 
 def show_manager_items():
-    """Manager: Item management"""
+    """Manager: Item management with delete functionality"""
     st.header("⚙️ Item Management")
     
-    tab1, tab2 = st.tabs(["➕ Add Item", "📋 View Items"])
+    tab1, tab2, tab3 = st.tabs(["➕ Add Item", "📋 View Items", "🗑️ Delete Items"])
     
     with tab1:
         branches_df = get_all_branches()
@@ -1477,9 +1582,111 @@ def show_manager_items():
             display_df.columns = ['Branch', 'ID', 'Name', 'Category', 'Stock', 'Min', 'Unit']
             
             st.dataframe(display_df, use_container_width=True, height=400)
+    
+    with tab3:
+        st.subheader("🗑️ Delete Items")
+        st.warning("⚠️ **DANGER ZONE** - Item deletion cannot be undone!")
+        
+        # Branch selection for deletion
+        branches_df = get_all_branches()
+        del_branch_filter = st.selectbox(
+            "🏪 Select Branch",
+            options=branches_df['branch_name'].tolist(),
+            key="delete_branch_filter"
+        )
+        
+        if del_branch_filter:
+            branch_id = branches_df[branches_df['branch_name'] == del_branch_filter]['id'].iloc[0]
+            items_df = get_items_by_role("warehouse_manager", branch_id)
+            
+            if not items_df.empty:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    item_to_delete = st.selectbox(
+                        "🗑️ Select Item to DELETE",
+                        options=[""] + items_df['id'].tolist(),
+                        format_func=lambda x: "SELECT ITEM TO DELETE" if x == "" else f"DELETE: {x} - {items_df[items_df['id']==x]['name'].iloc[0]}"
+                    )
+                    
+                    if item_to_delete and item_to_delete != "":
+                        item_info = items_df[items_df['id'] == item_to_delete].iloc[0]
+                        
+                        st.error(f"""
+                        **⚠️ ITEM TO BE DELETED:**
+                        - **ID:** {item_info['id']}
+                        - **Name:** {item_info['name']}
+                        - **Category:** {item_info['category']}
+                        - **Stock:** {item_info['current_stock']} {item_info['unit']}
+                        - **Branch:** {item_info['branch_name']}
+                        """)
+                
+                with col2:
+                    if item_to_delete and item_to_delete != "":
+                        st.write("**Deletion Controls:**")
+                        
+                        if st.button("🗑️ DELETE THIS ITEM", type="secondary", use_container_width=True):
+                            if st.session_state.get('confirm_delete_item') == item_to_delete:
+                                # DELETE THE ITEM
+                                try:
+                                    conn = sqlite3.connect('inventory.db')
+                                    c = conn.cursor()
+                                    
+                                    # Delete from all tables
+                                    c.execute('DELETE FROM items WHERE id = ? AND branch_id = ?', (item_to_delete, branch_id))
+                                    c.execute('DELETE FROM stock_movements WHERE item_id = ? AND branch_id = ?', (item_to_delete, branch_id))
+                                    
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    st.success(f"🗑️ DELETED '{item_info['name']}' from {item_info['branch_name']}!")
+                                    if 'confirm_delete_item' in st.session_state:
+                                        del st.session_state['confirm_delete_item']
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error deleting item: {str(e)}")
+                            else:
+                                st.session_state['confirm_delete_item'] = item_to_delete
+                                st.error("⚠️ CLICK DELETE AGAIN TO CONFIRM!")
+                        
+                        if st.button("❌ Cancel Deletion", use_container_width=True):
+                            if 'confirm_delete_item' in st.session_state:
+                                del st.session_state['confirm_delete_item']
+                            st.rerun()
+                        
+                        # Clear stock option
+                        if item_info['current_stock'] > 0:
+                            if st.button(f"📉 Clear Stock ({item_info['current_stock']} {item_info['unit']})", use_container_width=True):
+                                update_stock(item_to_delete, branch_id, item_info['current_stock'], 'OUT', 
+                                           'Stock cleared for deletion', '', '', '', st.session_state.username)
+                                st.success("Stock cleared to zero!")
+                                st.rerun()
+            else:
+                st.info(f"No items found in {del_branch_filter}")
+    
+    # Quick stats
+    items_df = get_items_by_role("warehouse_manager")
+    if not items_df.empty:
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Items", len(items_df))
+        
+        with col2:
+            active_items = len(items_df[items_df['current_stock'] > 0])
+            st.metric("Active Items", active_items)
+        
+        with col3:
+            low_stock_items = len(items_df[items_df['current_stock'] <= items_df['min_stock']])
+            st.metric("Low Stock", low_stock_items)
+        
+        with col4:
+            zero_stock_items = len(items_df[items_df['current_stock'] <= 0])
+            st.metric("Zero Stock", zero_stock_items)
 
 def show_manager_movements():
-    """Manager: View all movements"""
+    """Manager: View all movements with enhanced filtering"""
     st.header("📈 Movement History")
     
     # Filters
@@ -1499,9 +1706,25 @@ def show_manager_movements():
         )
     
     with col3:
+        user_filter = st.selectbox(
+            "👤 User",
+            options=["All", "My Actions", "Admin Actions"]
+        )
+    
+    # Additional filters
+    col4, col5 = st.columns(2)
+    
+    with col4:
         movement_filter = st.selectbox(
             "🔄 Type",
-            options=["All", "Transfers", "Production", "Admin Actions", "Stock Updates"]
+            options=["All", "Transfers", "Production", "Admin Updates", "Stock Updates"]
+        )
+    
+    with col5:
+        limit_records = st.selectbox(
+            "📊 Records",
+            options=[50, 100, 200],
+            index=1
         )
     
     # Get movements
@@ -1510,38 +1733,50 @@ def show_manager_movements():
     query = '''
         SELECT sm.*, i.name as item_name, i.unit, i.category, b.branch_name
         FROM stock_movements sm
-        JOIN items i ON sm.item_id = i.id AND sm.branch_id = i.branch_id
+        JOIN items i ON sm.item_id = i.id 
         JOIN branches b ON sm.branch_id = b.id
-        WHERE 1=1
+        WHERE EXISTS (SELECT 1 FROM items i2 WHERE i2.id = sm.item_id AND i2.branch_id = sm.branch_id)
     '''
     
     params = []
     
+    # Branch filtering
     if branch_filter != "All":
         branch_id = branches_df[branches_df['branch_name'] == branch_filter]['id'].iloc[0]
         query += " AND sm.branch_id = ?"
         params.append(branch_id)
     
+    # Category filtering
     if category_filter != "All":
         query += " AND i.category = ?"
         params.append(category_filter)
     
+    # User filtering - Manager sees their actions and admin actions
+    if user_filter == "My Actions":
+        query += " AND sm.user_id = ?"
+        params.append(st.session_state.username)
+    elif user_filter == "Admin Actions":
+        query += " AND sm.user_id = 'admin'"
+    
+    # Movement type filtering
     if movement_filter == "Transfers":
         query += " AND sm.movement_type LIKE 'TRANSFER_%'"
     elif movement_filter == "Production":
         query += " AND sm.movement_type = 'PRODUCTION'"
-    elif movement_filter == "Admin Actions":
+    elif movement_filter == "Admin Updates":
         query += " AND sm.movement_type LIKE 'ADMIN_%'"
     elif movement_filter == "Stock Updates":
         query += " AND sm.movement_type IN ('IN', 'OUT')"
     
-    query += " ORDER BY sm.date_time DESC LIMIT 100"
+    query += f" ORDER BY sm.date_time DESC LIMIT {limit_records}"
     
     movements_df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     
     if not movements_df.empty:
-        # Build tracking info
+        st.info(f"📊 Found {len(movements_df)} movements")
+        
+        # Build tracking info and display
         def build_tracking(row):
             tracking = []
             if row.get('batch_nr'):
@@ -1552,11 +1787,50 @@ def show_manager_movements():
         
         movements_df['Tracking'] = movements_df.apply(build_tracking, axis=1)
         
-        display_df = movements_df[['date_time', 'branch_name', 'category', 'item_name', 'movement_type', 'quantity', 'unit', 'Tracking', 'user_id']]
+        # Format movement types for better readability
+        def format_movement_type(movement_type):
+            if movement_type == 'ADMIN_SET':
+                return 'Admin: SET'
+            elif movement_type == 'ADMIN_IN':
+                return 'Admin: ADD'
+            elif movement_type == 'ADMIN_OUT':
+                return 'Admin: SUBTRACT'
+            elif movement_type == 'TRANSFER_OUT':
+                return 'Transfer: OUT'
+            elif movement_type == 'TRANSFER_IN':
+                return 'Transfer: IN'
+            else:
+                return movement_type
+        
+        movements_df['FormattedType'] = movements_df['movement_type'].apply(format_movement_type)
+        
+        display_df = movements_df[['date_time', 'branch_name', 'category', 'item_name', 'FormattedType', 'quantity', 'unit', 'Tracking', 'user_id']]
         display_df.columns = ['Date', 'Branch', 'Category', 'Item', 'Type', 'Qty', 'Unit', 'Tracking', 'User']
         display_df['Date'] = pd.to_datetime(display_df['Date']).dt.strftime('%m-%d %H:%M')
         
         st.dataframe(display_df, use_container_width=True, height=400)
+        
+        # Summary statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Movements", len(movements_df))
+        
+        with col2:
+            my_actions = len(movements_df[movements_df['user_id'] == st.session_state.username])
+            st.metric("My Actions", my_actions)
+        
+        with col3:
+            admin_actions = len(movements_df[movements_df['user_id'] == 'admin'])
+            st.metric("Admin Actions", admin_actions)
+        
+        with col4:
+            transfers = len(movements_df[movements_df['movement_type'].str.contains('TRANSFER')])
+            st.metric("Transfers", transfers)
+    else:
+        st.info("No movements found with selected filters")
+        if branch_filter != "All":
+            st.info(f"💡 Try selecting 'All' branches or check if there are items in {branch_filter}")
 
 def show_manager_users():
     """Manager: User management with full CRUD operations"""
