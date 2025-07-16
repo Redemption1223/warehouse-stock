@@ -393,13 +393,8 @@ def show_login():
                 st.error("❌ Please enter username and password")
     
     st.markdown("---")
-    st.markdown("**🔑 Login Details:**")
-    st.markdown("""
-    - **Warehouse Manager**: `warehouse_manager` / `manager123` *(Full Access)*
-    - **Boss/Owner**: `boss` / `boss123` *(View Only)*
-    - **Stock Admin**: `admin` / `admin123` *(Final Products Only)*
-    - **Branch Viewer**: `viewer` / `viewer123` *(Final Products by Branch)*
-    """)
+    st.markdown("**🔐 Secure Access System**")
+    st.info("Contact your system administrator for login credentials.")
 
 # ===============================
 # NAVIGATION SYSTEM
@@ -1564,7 +1559,7 @@ def show_manager_movements():
         st.dataframe(display_df, use_container_width=True, height=400)
 
 def show_manager_users():
-    """Manager: User management"""
+    """Manager: User management with full CRUD operations"""
     st.header("👥 User Management")
     
     # Show current users
@@ -1589,57 +1584,240 @@ def show_manager_users():
         
         st.dataframe(display_df, use_container_width=True)
     
-    # Add new user
-    st.subheader("➕ Add New User")
+    # Tabs for user management
+    tab1, tab2, tab3 = st.tabs(["➕ Add User", "✏️ Edit Users", "🔒 Reset Password"])
     
-    with st.form("add_user_form"):
-        col1, col2 = st.columns(2)
+    with tab1:
+        st.subheader("➕ Add New User")
+        
+        with st.form("add_user_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                new_username = st.text_input("Username")
+                new_password = st.text_input("Password", type="password")
+                new_full_name = st.text_input("Full Name")
+            
+            with col2:
+                new_role = st.selectbox("Role", ["viewer", "admin", "boss", "warehouse_manager"])
+                
+                role_info = {
+                    "viewer": "👁️ **Viewer**: Final products by branch only",
+                    "admin": "🔧 **Admin**: Final products stock management",
+                    "boss": "👔 **Boss**: View all, edit nothing",
+                    "warehouse_manager": "👨‍💼 **Manager**: Full access"
+                }
+                
+                st.info(role_info[new_role])
+            
+            submitted = st.form_submit_button("➕ Create User", type="primary")
+            
+            if submitted and new_username and new_password and new_full_name:
+                if len(new_password) < 6:
+                    st.error("❌ Password must be at least 6 characters")
+                else:
+                    try:
+                        conn = sqlite3.connect('inventory.db')
+                        c = conn.cursor()
+                        
+                        # Check if exists
+                        existing = c.execute("SELECT username FROM users WHERE username = ?", (new_username,)).fetchone()
+                        if existing:
+                            st.error("❌ Username already exists")
+                        else:
+                            password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                            c.execute("INSERT INTO users (username, password_hash, role, full_name, created_date) VALUES (?, ?, ?, ?, ?)",
+                                     (new_username, password_hash, new_role, new_full_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                            
+                            conn.commit()
+                            st.success(f"✅ User '{new_username}' created!")
+                            st.info(f"🔑 **Login:** `{new_username}` / `{new_password}`")
+                            st.rerun()
+                        
+                        conn.close()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+    
+    with tab2:
+        st.subheader("✏️ Edit Users")
+        
+        if not users_df.empty:
+            # Select user to edit (exclude current user)
+            other_users = users_df[users_df['username'] != st.session_state.username]
+            
+            if not other_users.empty:
+                selected_user = st.selectbox(
+                    "Select User to Edit",
+                    options=[""] + other_users['username'].tolist(),
+                    format_func=lambda x: "Select a user..." if x == "" else f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0] if x else ''}"
+                )
+                
+                if selected_user:
+                    user_info = users_df[users_df['username'] == selected_user].iloc[0]
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Username:** {user_info['username']}")
+                        st.write(f"**Name:** {user_info['full_name']}")
+                        st.write(f"**Role:** {user_info['Role']}")
+                        st.write(f"**Last Login:** {user_info['last_login'] or 'Never'}")
+                    
+                    with col2:
+                        # Edit user details
+                        with st.form("edit_user_form"):
+                            new_full_name = st.text_input("Update Full Name", value=user_info['full_name'])
+                            new_role = st.selectbox("Update Role", 
+                                                   ["viewer", "admin", "boss", "warehouse_manager"],
+                                                   index=["viewer", "admin", "boss", "warehouse_manager"].index(user_info['username'].split('_')[0] if '_' in user_info['username'] else user_info['Role'].split()[-1].lower()))
+                            
+                            col2a, col2b = st.columns(2)
+                            
+                            with col2a:
+                                update_submitted = st.form_submit_button("💾 Update User", type="primary")
+                            
+                            with col2b:
+                                st.write("")  # Spacing
+                            
+                            if update_submitted:
+                                try:
+                                    conn = sqlite3.connect('inventory.db')
+                                    c = conn.cursor()
+                                    c.execute("UPDATE users SET full_name = ?, role = ? WHERE username = ?",
+                                             (new_full_name, new_role, selected_user))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    st.success(f"✅ Updated user '{selected_user}'!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error updating user: {str(e)}")
+                    
+                    # Delete user section
+                    st.markdown("---")
+                    st.subheader("🗑️ Delete User")
+                    st.warning(f"⚠️ **Delete user:** {selected_user}")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if st.button("🗑️ DELETE USER", type="secondary", use_container_width=True):
+                            if st.session_state.get('confirm_delete_user') == selected_user:
+                                try:
+                                    conn = sqlite3.connect('inventory.db')
+                                    c = conn.cursor()
+                                    c.execute('DELETE FROM users WHERE username = ?', (selected_user,))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    st.success(f"🗑️ User '{selected_user}' deleted successfully!")
+                                    if 'confirm_delete_user' in st.session_state:
+                                        del st.session_state['confirm_delete_user']
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error deleting user: {str(e)}")
+                            else:
+                                st.session_state['confirm_delete_user'] = selected_user
+                                st.error("⚠️ Click DELETE USER again to confirm!")
+                    
+                    with col2:
+                        if st.button("❌ Cancel", use_container_width=True):
+                            if 'confirm_delete_user' in st.session_state:
+                                del st.session_state['confirm_delete_user']
+                            st.rerun()
+            else:
+                st.info("You are the only user in the system.")
+        else:
+            st.info("No users found.")
+    
+    with tab3:
+        st.subheader("🔒 Reset Password")
+        
+        if not users_df.empty:
+            # Select user for password reset (exclude current user)
+            other_users = users_df[users_df['username'] != st.session_state.username]
+            
+            if not other_users.empty:
+                user_to_reset = st.selectbox(
+                    "Select User for Password Reset",
+                    options=other_users['username'].tolist(),
+                    format_func=lambda x: f"{x} - {other_users[other_users['username']==x]['full_name'].iloc[0]}"
+                )
+                
+                if user_to_reset:
+                    with st.form("reset_password_form"):
+                        new_temp_password = st.text_input("New Password", type="password", placeholder="Enter new password")
+                        confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm new password")
+                        
+                        reset_submitted = st.form_submit_button("🔒 Reset Password", type="primary")
+                        
+                        if reset_submitted:
+                            if not new_temp_password:
+                                st.error("❌ Please enter a new password")
+                            elif len(new_temp_password) < 6:
+                                st.error("❌ Password must be at least 6 characters!")
+                            elif new_temp_password != confirm_password:
+                                st.error("❌ Passwords do not match!")
+                            else:
+                                try:
+                                    conn = sqlite3.connect('inventory.db')
+                                    c = conn.cursor()
+                                    
+                                    password_hash = hashlib.sha256(new_temp_password.encode()).hexdigest()
+                                    c.execute("UPDATE users SET password_hash = ? WHERE username = ?", 
+                                             (password_hash, user_to_reset))
+                                    conn.commit()
+                                    conn.close()
+                                    
+                                    st.success(f"🔒 Password reset for '{user_to_reset}'!")
+                                    st.info(f"**New login details:**\nUsername: `{user_to_reset}`\nPassword: `{new_temp_password}`")
+                                except Exception as e:
+                                    st.error(f"❌ Error resetting password: {str(e)}")
+            else:
+                st.info("No other users to reset passwords for.")
+        else:
+            st.info("No users found.")
+    
+    # Security tips
+    with st.expander("🛡️ Security Tips"):
+        st.markdown("""
+        ### 🔐 User Management Best Practices:
+        - ✅ **Use strong passwords** (at least 8 characters)
+        - ✅ **Remove users** who no longer need access
+        - ✅ **Review user roles** regularly
+        - ✅ **Change default passwords** immediately after first login
+        
+        ### 👥 Role Guidelines:
+        - **👁️ Viewer**: Sales staff, drivers, general employees
+        - **🔧 Admin**: Stock controllers (final products only)
+        - **👔 Boss**: Management, supervisors (view-only access)
+        - **👨‍💼 Manager**: Warehouse staff, inventory controllers (full access)
+        """)
+    
+    # User activity summary
+    if not users_df.empty:
+        st.subheader("📊 User Summary")
+        
+        role_counts = users_df['Role'].value_counts()
+        
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            new_username = st.text_input("Username")
-            new_password = st.text_input("Password", type="password")
-            new_full_name = st.text_input("Full Name")
+            manager_count = len(users_df[users_df['role'] == 'warehouse_manager'])
+            st.metric("👨‍💼 Managers", manager_count)
         
         with col2:
-            new_role = st.selectbox("Role", ["viewer", "admin", "boss", "warehouse_manager"])
-            
-            role_info = {
-                "viewer": "👁️ **Viewer**: Final products by branch only",
-                "admin": "🔧 **Admin**: Final products stock management",
-                "boss": "👔 **Boss**: View all, edit nothing",
-                "warehouse_manager": "👨‍💼 **Manager**: Full access"
-            }
-            
-            st.info(role_info[new_role])
+            boss_count = len(users_df[users_df['role'] == 'boss'])
+            st.metric("👔 Bosses", boss_count)
         
-        submitted = st.form_submit_button("➕ Create User", type="primary")
+        with col3:
+            admin_count = len(users_df[users_df['role'] == 'admin'])
+            st.metric("🔧 Admins", admin_count)
         
-        if submitted and new_username and new_password and new_full_name:
-            if len(new_password) < 6:
-                st.error("❌ Password must be at least 6 characters")
-            else:
-                try:
-                    conn = sqlite3.connect('inventory.db')
-                    c = conn.cursor()
-                    
-                    # Check if exists
-                    existing = c.execute("SELECT username FROM users WHERE username = ?", (new_username,)).fetchone()
-                    if existing:
-                        st.error("❌ Username already exists")
-                    else:
-                        password_hash = hashlib.sha256(new_password.encode()).hexdigest()
-                        c.execute("INSERT INTO users (username, password_hash, role, full_name, created_date) VALUES (?, ?, ?, ?, ?)",
-                                 (new_username, password_hash, new_role, new_full_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                        
-                        conn.commit()
-                        st.success(f"✅ User '{new_username}' created!")
-                        st.info(f"🔑 **Login:** `{new_username}` / `{new_password}`")
-                        st.rerun()
-                    
-                    conn.close()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+        with col4:
+            viewer_count = len(users_df[users_df['role'] == 'viewer'])
+            st.metric("👁️ Viewers", viewer_count)
 
 # ===============================
 # MAIN APPLICATION
