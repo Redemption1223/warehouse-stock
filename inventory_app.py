@@ -57,6 +57,20 @@ def init_database():
         FOREIGN KEY (branch_id) REFERENCES branches (id)
     )''')
     
+    # Bill of Materials table
+    c.execute('''CREATE TABLE IF NOT EXISTS bom (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        final_product_id TEXT NOT NULL,
+        ingredient_id TEXT NOT NULL,
+        quantity_required REAL NOT NULL,
+        branch_id INTEGER NOT NULL,
+        created_date TEXT,
+        created_by TEXT,
+        FOREIGN KEY (final_product_id) REFERENCES items (id),
+        FOREIGN KEY (ingredient_id) REFERENCES items (id),
+        FOREIGN KEY (branch_id) REFERENCES branches (id)
+    )''')
+    
     # Stock movements table
     c.execute('''CREATE TABLE IF NOT EXISTS stock_movements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +168,32 @@ def load_sample_data():
         c.execute('''INSERT INTO items (id, branch_id, name, category, unit, current_stock, min_stock, cost_per_unit, location, warehouse_area, created_date, created_by)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                   (item_id, main_branch_id, name, category, unit, current_stock, min_stock, 0, "Main", "General",
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "system"))
+    
+    # Add sample BOM data
+    sample_bom = [
+        # LITHIUM BLACK 9L recipe
+        ("LB9L001", "LIB001", 2.5),  # 2.5kg Lithium Black Powder
+        ("LB9L001", "9LB001", 1),    # 1x 9L Box
+        ("LB9L001", "9LS001", 1),    # 1x 9L Sticker
+        
+        # LITHIUM BLACK 6L recipe  
+        ("LB6L001", "LIB001", 1.8),  # 1.8kg Lithium Black Powder
+        ("LB6L001", "6LB001", 1),    # 1x 6L Box
+        ("LB6L001", "6LS001", 1),    # 1x 6L Sticker
+        ("LB6L001", "6LE001", 1),    # 1x 6L Empty Extinguisher
+        
+        # LITHIUM BLACK 2L recipe
+        ("LB2L001", "LIB001", 0.8),  # 0.8kg Lithium Black Powder
+        ("LB2L001", "2LB001", 1),    # 1x 2L Box
+        ("LB2L001", "2LS001", 1),    # 1x 2L Sticker
+        ("LB2L001", "2LE001", 1),    # 1x 2L Empty Extinguisher
+    ]
+    
+    for final_product_id, ingredient_id, quantity_required in sample_bom:
+        c.execute('''INSERT INTO bom (final_product_id, ingredient_id, quantity_required, branch_id, created_date, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (final_product_id, ingredient_id, quantity_required, main_branch_id,
                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "system"))
     
     conn.commit()
@@ -324,6 +364,70 @@ def transfer_stock_between_branches(item_id, from_branch_id, to_branch_id, quant
         conn.close()
         return False, f"Transfer failed: {str(e)}"
 
+def get_bom(final_product_id, branch_id):
+    """Get Bill of Materials for a product in a specific branch"""
+    conn = sqlite3.connect('inventory.db')
+    query = '''SELECT b.*, i.name as ingredient_name, i.unit, i.current_stock
+               FROM bom b
+               JOIN items i ON b.ingredient_id = i.id AND b.branch_id = i.branch_id
+               WHERE b.final_product_id = ? AND b.branch_id = ?'''
+    df = pd.read_sql_query(query, conn, params=[final_product_id, branch_id])
+    conn.close()
+    return df
+
+def add_bom_item(final_product_id, ingredient_id, quantity_required, branch_id, user_id):
+    """Add item to Bill of Materials"""
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO bom (final_product_id, ingredient_id, quantity_required, branch_id, created_date, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?)''', 
+              (final_product_id, ingredient_id, quantity_required, branch_id, 
+               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    conn.commit()
+    conn.close()
+
+def delete_bom_item(final_product_id, ingredient_id, branch_id):
+    """Remove item from Bill of Materials"""
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM bom WHERE final_product_id = ? AND ingredient_id = ? AND branch_id = ?', 
+              (final_product_id, ingredient_id, branch_id))
+    conn.commit()
+    conn.close()
+
+def produce_item(final_product_id, branch_id, quantity_to_produce, user_id):
+    """Produce final product and automatically deduct ingredients based on BOM"""
+    bom_df = get_bom(final_product_id, branch_id)
+    
+    if bom_df.empty:
+        return False, "No Bill of Materials found for this product"
+    
+    # Check if enough ingredients available
+    insufficient_ingredients = []
+    for _, row in bom_df.iterrows():
+        required_qty = row['quantity_required'] * quantity_to_produce
+        if row['current_stock'] < required_qty:
+            insufficient_ingredients.append(f"{row['ingredient_name']}: Need {required_qty}, Have {row['current_stock']}")
+    
+    if insufficient_ingredients:
+        return False, f"Insufficient ingredients: {'; '.join(insufficient_ingredients)}"
+    
+    try:
+        # Deduct ingredients
+        for _, row in bom_df.iterrows():
+            required_qty = row['quantity_required'] * quantity_to_produce
+            update_stock(row['ingredient_id'], branch_id, required_qty, 'OUT', 
+                        f'Production of {quantity_to_produce} x {final_product_id}', '', '', '', user_id)
+        
+        # Add final product to stock
+        update_stock(final_product_id, branch_id, quantity_to_produce, 'PRODUCTION', 
+                    f'Produced {quantity_to_produce} units', '', '', '', user_id)
+        
+        return True, f"Successfully produced {quantity_to_produce} units"
+    
+    except Exception as e:
+        return False, f"Error during production: {str(e)}"
+
 def add_item(item_id, name, category, unit, current_stock, min_stock, branch_id, user_id):
     """Add new item to branch"""
     conn = sqlite3.connect('inventory.db')
@@ -429,6 +533,7 @@ def get_navigation_items(user_role):
             ("📦", "Stock", "manager_stock"),
             ("🔄", "Transfers", "manager_transfers"),
             ("🏭", "Production", "manager_production"),
+            ("🧾", "BOM", "manager_bom"),
             ("⚙️", "Items", "manager_items"),
             ("📈", "Movements", "manager_movements"),
             ("👥", "Users", "manager_users")
@@ -1485,8 +1590,8 @@ def show_manager_transfers():
             st.dataframe(display_df, use_container_width=True, height=400)
 
 def show_manager_production():
-    """Manager: Production management"""
-    st.header("🏭 Production")
+    """Manager: Production management with BOM integration"""
+    st.header("🏭 Production Center")
     
     branches_df = get_all_branches()
     
@@ -1498,6 +1603,9 @@ def show_manager_production():
     )
     
     if selected_branch_id:
+        branch_name = branches_df[branches_df['id'] == selected_branch_id]['branch_name'].iloc[0]
+        st.info(f"🏭 Production at: **{branch_name}**")
+        
         items_df = get_items_by_role("warehouse_manager", selected_branch_id)
         final_products = items_df[items_df['category'] == 'Final Product']
         
@@ -1506,7 +1614,7 @@ def show_manager_production():
             
             with col1:
                 selected_product = st.selectbox(
-                    "Product",
+                    "🔥 Final Product",
                     options=final_products['id'].tolist(),
                     format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}"
                 )
@@ -1514,17 +1622,259 @@ def show_manager_production():
                 quantity = st.number_input("Quantity to Produce", min_value=1, value=1)
                 
                 if st.button("🚀 Start Production", type="primary"):
-                    update_stock(selected_product, selected_branch_id, quantity, 'PRODUCTION', 
-                               f'Produced {quantity} units', '', '', '', st.session_state.username)
-                    st.success(f"✅ Produced {quantity} units!")
-                    st.rerun()
+                    if selected_product and quantity > 0:
+                        # Use BOM-based production
+                        success, message = produce_item(selected_product, selected_branch_id, quantity, st.session_state.username)
+                        
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                            # If no BOM, offer simple production
+                            if "No Bill of Materials found" in message:
+                                st.warning("⚠️ No BOM defined. Using simple production (no ingredient deduction).")
+                                if st.button("🔄 Produce Without BOM", type="secondary"):
+                                    update_stock(selected_product, selected_branch_id, quantity, 'PRODUCTION', 
+                                               f'Simple production: {quantity} units', '', '', '', st.session_state.username)
+                                    st.success(f"✅ Produced {quantity} units (no ingredients deducted)!")
+                                    st.rerun()
             
             with col2:
                 if selected_product:
                     product_info = final_products[final_products['id'] == selected_product].iloc[0]
+                    
                     st.subheader("📦 Product Info")
                     st.write(f"**Current Stock:** {product_info['current_stock']} {product_info['unit']}")
                     st.write(f"**Min Stock:** {product_info['min_stock']} {product_info['unit']}")
+                    
+                    # Show BOM requirements
+                    st.subheader("🧾 Recipe (BOM)")
+                    bom_df = get_bom(selected_product, selected_branch_id)
+                    
+                    if not bom_df.empty:
+                        st.write(f"**To produce {quantity} units:**")
+                        
+                        can_produce = True
+                        for _, row in bom_df.iterrows():
+                            required_qty = row['quantity_required'] * quantity
+                            available_qty = row['current_stock']
+                            
+                            if available_qty >= required_qty:
+                                status = "✅"
+                                color = "green"
+                            else:
+                                status = "❌"
+                                color = "red"
+                                can_produce = False
+                            
+                            st.markdown(f"{status} **{row['ingredient_name']}**: Need {required_qty} {row['unit']} (Available: {available_qty})")
+                        
+                        st.markdown("---")
+                        if can_produce:
+                            st.success("✅ Can produce - All ingredients available")
+                        else:
+                            st.error("❌ Cannot produce - Insufficient ingredients")
+                    else:
+                        st.warning("⚠️ No BOM defined for this product")
+                        st.info("💡 Create a BOM in the 'BOM' section to enable automatic ingredient deduction")
+        else:
+            st.warning("No final products found in this branch")
+            st.info("💡 Add final products using the 'Items' section")
+
+def show_manager_bom():
+    """Manager: Bill of Materials management"""
+    st.header("🧾 Bill of Materials (BOM)")
+    
+    branches_df = get_all_branches()
+    
+    # Branch selection
+    selected_branch_id = st.selectbox(
+        "🏪 Select Branch",
+        options=branches_df['id'].tolist(),
+        format_func=lambda x: f"{branches_df[branches_df['id']==x]['branch_name'].iloc[0]}"
+    )
+    
+    if selected_branch_id:
+        branch_name = branches_df[branches_df['id'] == selected_branch_id]['branch_name'].iloc[0]
+        items_df = get_items_by_role("warehouse_manager", selected_branch_id)
+        final_products = items_df[items_df['category'] == 'Final Product']
+        
+        if final_products.empty:
+            st.warning("No final products found in this branch")
+            st.info("💡 Add final products first using the 'Items' section")
+            return
+        
+        st.info(f"📍 Managing BOM for: **{branch_name}**")
+        
+        tab1, tab2, tab3 = st.tabs(["📋 View BOM", "➕ Add Recipe", "🗑️ Manage Ingredients"])
+        
+        with tab1:
+            st.subheader("📋 Current Bill of Materials")
+            
+            selected_product = st.selectbox(
+                "🔥 Select Final Product",
+                options=final_products['id'].tolist(),
+                format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}",
+                key="view_bom_product"
+            )
+            
+            if selected_product:
+                product_name = final_products[final_products['id'] == selected_product]['name'].iloc[0]
+                st.markdown(f"**Recipe for: {product_name}**")
+                
+                bom_df = get_bom(selected_product, selected_branch_id)
+                
+                if not bom_df.empty:
+                    # Show current BOM
+                    display_bom = bom_df[['ingredient_name', 'quantity_required', 'unit', 'current_stock']].copy()
+                    display_bom.columns = ['Ingredient', 'Required Qty', 'Unit', 'Available Stock']
+                    
+                    # Add status column
+                    def get_ingredient_status(row):
+                        if row['Available Stock'] >= row['Required Qty']:
+                            return "✅ OK"
+                        elif row['Available Stock'] > 0:
+                            return "⚠️ LOW"
+                        else:
+                            return "❌ OUT"
+                    
+                    display_bom['Status'] = display_bom.apply(get_ingredient_status, axis=1)
+                    st.dataframe(display_bom, use_container_width=True)
+                    
+                    # Production capacity
+                    st.subheader("🏭 Production Capacity")
+                    if not bom_df.empty:
+                        max_production = float('inf')
+                        limiting_ingredient = ""
+                        
+                        for _, row in bom_df.iterrows():
+                            possible_qty = int(row['current_stock'] / row['quantity_required'])
+                            if possible_qty < max_production:
+                                max_production = possible_qty
+                                limiting_ingredient = row['ingredient_name']
+                        
+                        if max_production == float('inf'):
+                            max_production = 0
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Max Production", f"{max_production} units")
+                        with col2:
+                            if limiting_ingredient:
+                                st.info(f"🔗 Limited by: {limiting_ingredient}")
+                else:
+                    st.info("No BOM defined for this product")
+                    st.markdown("💡 Use the 'Add Recipe' tab to create one")
+        
+        with tab2:
+            st.subheader("➕ Add Ingredient to Recipe")
+            
+            # Product selection
+            selected_product = st.selectbox(
+                "🔥 Final Product",
+                options=final_products['id'].tolist(),
+                format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}",
+                key="add_bom_product"
+            )
+            
+            if selected_product:
+                # Available ingredients (Raw Materials and Pre-Final)
+                available_ingredients = items_df[items_df['category'].isin(['Raw Material', 'Pre-Final'])]
+                
+                if not available_ingredients.empty:
+                    with st.form("add_bom_form"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            ingredient_id = st.selectbox(
+                                "🧪 Ingredient",
+                                options=available_ingredients['id'].tolist(),
+                                format_func=lambda x: f"{available_ingredients[available_ingredients['id']==x]['name'].iloc[0]} ({available_ingredients[available_ingredients['id']==x]['current_stock'].iloc[0]} {available_ingredients[available_ingredients['id']==x]['unit'].iloc[0]})"
+                            )
+                        
+                        with col2:
+                            quantity_required = st.number_input("Quantity Required per Unit", min_value=0.001, value=1.0, step=0.1)
+                        
+                        submitted = st.form_submit_button("➕ Add to Recipe", type="primary")
+                        
+                        if submitted and ingredient_id:
+                            try:
+                                add_bom_item(selected_product, ingredient_id, quantity_required, selected_branch_id, st.session_state.username)
+                                ingredient_name = available_ingredients[available_ingredients['id'] == ingredient_id]['name'].iloc[0]
+                                product_name = final_products[final_products['id'] == selected_product]['name'].iloc[0]
+                                st.success(f"✅ Added {ingredient_name} to {product_name} recipe!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error adding ingredient: {str(e)}")
+                else:
+                    st.warning("No raw materials or components found")
+                    st.info("💡 Add raw materials and components first using the 'Items' section")
+        
+        with tab3:
+            st.subheader("🗑️ Manage Recipe Ingredients")
+            
+            # Product selection
+            selected_product = st.selectbox(
+                "🔥 Final Product",
+                options=final_products['id'].tolist(),
+                format_func=lambda x: f"{final_products[final_products['id']==x]['name'].iloc[0]}",
+                key="manage_bom_product"
+            )
+            
+            if selected_product:
+                bom_df = get_bom(selected_product, selected_branch_id)
+                
+                if not bom_df.empty:
+                    st.write("**Current Ingredients:**")
+                    
+                    for _, row in bom_df.iterrows():
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        
+                        with col1:
+                            st.write(f"🧪 **{row['ingredient_name']}**: {row['quantity_required']} {row['unit']}")
+                        
+                        with col2:
+                            # Edit quantity
+                            new_qty = st.number_input("", value=float(row['quantity_required']), key=f"qty_{row['ingredient_id']}", min_value=0.001)
+                            if new_qty != row['quantity_required']:
+                                if st.button("💾", key=f"save_{row['ingredient_id']}"):
+                                    add_bom_item(selected_product, row['ingredient_id'], new_qty, selected_branch_id, st.session_state.username)
+                                    st.success("✅ Updated!")
+                                    st.rerun()
+                        
+                        with col3:
+                            # Delete ingredient
+                            if st.button("🗑️", key=f"del_{row['ingredient_id']}", type="secondary"):
+                                delete_bom_item(selected_product, row['ingredient_id'], selected_branch_id)
+                                st.success("✅ Removed ingredient!")
+                                st.rerun()
+                else:
+                    st.info("No ingredients in this recipe")
+        
+        # Quick stats
+        if not final_products.empty:
+            st.markdown("---")
+            st.subheader("📊 BOM Statistics")
+            
+            total_products = len(final_products)
+            products_with_bom = 0
+            
+            for _, product in final_products.iterrows():
+                bom_df = get_bom(product['id'], selected_branch_id)
+                if not bom_df.empty:
+                    products_with_bom += 1
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Final Products", total_products)
+            
+            with col2:
+                st.metric("With BOM", products_with_bom)
+            
+            with col3:
+                st.metric("Without BOM", total_products - products_with_bom)
 
 def show_manager_items():
     """Manager: Item management with delete functionality"""
@@ -2220,6 +2570,8 @@ def main():
             show_manager_transfers()
         elif current_page == "manager_production":
             show_manager_production()
+        elif current_page == "manager_bom":
+            show_manager_bom()
         elif current_page == "manager_items":
             show_manager_items()
         elif current_page == "manager_movements":
