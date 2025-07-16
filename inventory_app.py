@@ -428,6 +428,31 @@ def produce_item(final_product_id, branch_id, quantity_to_produce, user_id):
     except Exception as e:
         return False, f"Error during production: {str(e)}"
 
+def clean_duplicate_movements():
+    """Clean up duplicate movement records"""
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    
+    try:
+        # Remove duplicate movements (keep only the first occurrence)
+        c.execute('''
+            DELETE FROM stock_movements 
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM stock_movements 
+                GROUP BY item_id, branch_id, movement_type, quantity, date_time, user_id, from_branch_id, to_branch_id
+            )
+        ''')
+        
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return 0
+
 def add_item(item_id, name, category, unit, current_stock, min_stock, branch_id, user_id):
     """Add new item to branch"""
     conn = sqlite3.connect('inventory.db')
@@ -889,8 +914,23 @@ def show_admin_transfer():
             st.warning("No final products with stock in source branch")
 
 def show_admin_movements():
-    """Admin: View movements with proper filtering"""
+    """Admin: View movements with proper filtering and cleanup"""
     st.header("📈 Stock Movements")
+    
+    # Cleanup option for admin
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.subheader("📊 Final Product Movement Records")
+    
+    with col2:
+        if st.button("🧹 Clean Duplicates", type="secondary", help="Remove duplicate movement records"):
+            deleted = clean_duplicate_movements()
+            if deleted > 0:
+                st.success(f"✅ Cleaned {deleted} duplicate records!")
+                st.rerun()
+            else:
+                st.info("No duplicates found")
     
     # Filters
     col1, col2 = st.columns(2)
@@ -908,11 +948,11 @@ def show_admin_movements():
             options=["All", "My Actions", "Manager Actions"]
         )
     
-    # Get movements with proper filtering
+    # Get movements with proper filtering and deduplication
     conn = sqlite3.connect('inventory.db')
     
     query = '''
-        SELECT sm.*, i.name as item_name, i.unit, b.branch_name
+        SELECT DISTINCT sm.*, i.name as item_name, i.unit, b.branch_name
         FROM stock_movements sm
         JOIN items i ON sm.item_id = i.id 
         JOIN branches b ON sm.branch_id = b.id
@@ -935,7 +975,7 @@ def show_admin_movements():
     elif user_filter == "Manager Actions":
         query += " AND sm.user_id LIKE '%manager%'"
     
-    query += " ORDER BY sm.date_time DESC LIMIT 100"
+    query += " ORDER BY sm.date_time DESC, sm.id DESC LIMIT 100"
     
     movements_df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -2036,8 +2076,23 @@ def show_manager_items():
             st.metric("Zero Stock", zero_stock_items)
 
 def show_manager_movements():
-    """Manager: View all movements with enhanced filtering"""
+    """Manager: View all movements with enhanced filtering and cleanup"""
     st.header("📈 Movement History")
+    
+    # Cleanup option
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.subheader("📊 Stock Movement Records")
+    
+    with col2:
+        if st.button("🧹 Clean Duplicates", type="secondary", help="Remove duplicate movement records"):
+            deleted = clean_duplicate_movements()
+            if deleted > 0:
+                st.success(f"✅ Cleaned {deleted} duplicate records!")
+                st.rerun()
+            else:
+                st.info("No duplicates found")
     
     # Filters
     col1, col2, col3 = st.columns(3)
@@ -2077,11 +2132,11 @@ def show_manager_movements():
             index=1
         )
     
-    # Get movements
+    # Get movements with better deduplication
     conn = sqlite3.connect('inventory.db')
     
     query = '''
-        SELECT sm.*, i.name as item_name, i.unit, i.category, b.branch_name
+        SELECT DISTINCT sm.*, i.name as item_name, i.unit, i.category, b.branch_name
         FROM stock_movements sm
         JOIN items i ON sm.item_id = i.id 
         JOIN branches b ON sm.branch_id = b.id
@@ -2118,7 +2173,7 @@ def show_manager_movements():
     elif movement_filter == "Stock Updates":
         query += " AND sm.movement_type IN ('IN', 'OUT')"
     
-    query += f" ORDER BY sm.date_time DESC LIMIT {limit_records}"
+    query += f" ORDER BY sm.date_time DESC, sm.id DESC LIMIT {limit_records}"
     
     movements_df = pd.read_sql_query(query, conn, params=params)
     conn.close()
